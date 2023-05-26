@@ -1,0 +1,31 @@
+[build-system]
+requires = [
+  "setuptools>=61.0",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "strfpy"
+version = "0.0.1"
+authors = [
+  { name="kailin zhuang", email="kailinzhuang@gmail.com" },
+]
+description = "preprocessing of data from our electrophysiological experiemnts"
+readme = "README.md"
+requires-python = ">=3.7"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dynamic = ["dependencies"]
+
+[project.urls]
+"Homepage" = "https://github.com/kailinzhuang/strfpy"
+"Bug Tracker" = "https://github.com/kailinzhuang/strfpy/issues"
+
+[tool.setuptools]
+py-modules = ["strfpy"]
+
+#[tool.setuptools.dynamic]
+#dependencies = {file = ["requirements.txt"]}

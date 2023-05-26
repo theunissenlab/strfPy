@@ -1,0 +1,32 @@
+name: strf
+channels:
+  - conda-forge
+dependencies:
+  # Core scientific python
+  - python=3.9
+  - numpy
+  - matplotlib
+  - pandas
+  - pyqt
+  - scipy
+  - scikit-image
+  - scikit-learn
+  - pip
+
+
+  # Jupyter Environment
+  - notebook
+  - ipython
+
+  - pip:
+      # Neuro stuff
+      - git+https://github.com/ftheunissen/mne-spikes.git
+
+      # Utilities
+      - download
+      - nbgrader
+      - tqdm
+
+      # Auditory analysis
+      - git+https://github.com/theunissenlab/soundsig
+      - librosa
