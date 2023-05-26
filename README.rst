@@ -1,19 +1,12 @@
-Tutorials for the CRCNS Course
+Python Code for STRF Estimation
 -------------------------------
-You have two options for running the tutorial: 
 
-1.  Writing matlab code and running on your laptop. Requires Matlab and some Toolboxes)
+This code base is a python version of the direct fit code of STRFLab.
+This code estimates STRFs by performing ridge regression in the Fourier Domain for the temporal dimension.
+Ridge regression in the Fourier domain is faster and more robust than Ridge in both spatial and temporal dimension since
+the fourier componnents are the PCs is temporal statistics are stationary.
 
-2.  Writing python code and running on your laptop. Requires Python and some data analysis packages: see crcns-student/python/getting_started.ipynb
-
-In either case, I suggest getting the entire repository. You can clone the repository by typing: 
-
-git clone https://github.com/theunissenlab/crcns.git 
-
-You will also need to download some data that should be added to the crcns folder you just created by cloning.
-
-You will find the data directory on google drive at:
-https://drive.google.com/drive/folders/1NA0Nx-Pul3W73tPROXKEDIYhDehWpRI6?usp=sharing
+The algorithm also performs a modified version of lasso regression (thus elastic net) also for optimizing speed.
 
 
 
