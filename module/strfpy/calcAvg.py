@@ -119,7 +119,7 @@ def df_cal_AVG(DDS, PARAMS, nband=None, psth_option=None, lin_flag=1, sil_window
 
         # then calculate response_avg
         if DDS[n]['ntrials'] > 1:
-            temp = np.mean(psth_rec, axis=1)
+            temp = np.sum(psth_rec, axis=1)    # Given that the stimulus auto correlation multiplies by ntrials - this should be sum and not mean... 
             psth.append(temp[:nt])
         else:
             psth.append(psth_rec[:nt])
@@ -127,7 +127,7 @@ def df_cal_AVG(DDS, PARAMS, nband=None, psth_option=None, lin_flag=1, sil_window
         tot_trials = tot_trials + nt + sil_window
 
         # calculate the total spike/response avg.
-        Avg_psth = Avg_psth + np.sum(psth[n][:nt])
+        Avg_psth = Avg_psth + np.sum(psth[n][:nt]/DDS[n]['ntrials'])  # If this is average per trials 
 
 
         timevary_psth.append(psth[n].shape[1])
