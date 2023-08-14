@@ -33,7 +33,7 @@ def trnDirectFit(modelParams=None, datIdx=None, options=None, globalDat=None, *a
         options['stimSampleRate'] = 1000
         options['respSampleRate'] = 1000
         options['infoFreqCutoff'] = 100
-        options['infoWindowSize'] = 0.500
+        options['infoWindowSize'] = 0.250
 
         tempDir = tempfile.gettempdir()
         options['outputDir'] = tempDir
@@ -116,13 +116,20 @@ def trnDirectFit(modelParams=None, datIdx=None, options=None, globalDat=None, *a
 
             infoSum = 0
             numJNStrfs = numSamples
+            infoTBins = 0
             for p in range(numJNStrfs):
+
                 smoothedMeanStrfJN = df_fast_filter_filter(strfsJN[:, :, p], strfsJN_std[:, :, p], spvals[q])
                 strfToUse = smoothedMeanStrfJN[:, strfRng]
                 
                 srRange = np.where(globDat['groupIdx'] == p)[0]
                 stim = globDat['stim'][srRange, :]
                 rresp = globDat['resp'][srRange]
+
+                # Skip the very short stims to perform the coherence.
+                if (len(rresp) < options['infoWindowSize']):
+                    continue
+
                 gindx = np.ones((1, stim.shape[0]))
 
                 #compute the prediction for the held out stimulus
@@ -134,10 +141,14 @@ def trnDirectFit(modelParams=None, datIdx=None, options=None, globalDat=None, *a
                     mresp = mresp + tvRespAvg[p, :len(mresp)]
                 
                 #compute coherence and info across pairs
-                cStruct = compute_coherence_mean(mresp, rresp, options['respSampleRate'], options['infoFreqCutoff'], options['infoWindowSize'])
-                infoSum = infoSum + np.real(cStruct['info'])
+                # doing this for single trials
+                # for (data in rawData):
+                cStruct = compute_coherence_mean(mresp, rresp, options['respSampleRate'], options['infoFreqCutoff'], options['infoWindowSize'] )
+                infoSum += np.real(cStruct['info'])*len(mresp)
+                infoTBins += len(mresp)
+                
         
-            avgInfo = infoSum / numJNStrfs
+            avgInfo = infoSum / infoTBins   # This is now normalized by the stimulus length....
 
             print(f"Tolerance={options['tolerances'][k]}, Sparseness={spvals[q]}, Avg. Prediction Info={avgInfo}")
 
