@@ -5,8 +5,58 @@
 import os
 import numpy as np
 import time
-from .calcAvg import df_cal_AVG, df_Check_And_Load
+from .calcAvg import calculateLeaveOneOutAverages, df_Check_And_Load
 from scipy.signal import correlate
+import pandas
+import itertools 
+
+def autocorr2d(stim, nlags):
+    # TODO there may be a smarter way to do this with tensors
+    # also could use FFT to speed it up
+    ac = np.zeros((len(np.triu_indices(stim.shape[0])[0]),nlags))
+    for lag in range(nlags):
+        temp = stim[:,lag:] @ stim.T[:stim.shape[1]-lag,:]
+        # temp = np.outer(stim[:,onevect],st[othervect,:])
+        ac[:,lag] += temp[np.triu_indices(stim.shape[0])]
+    return ac #/ np.arange(stim.shape[1], stim.shape[1] - nlags, -1)
+
+def calculateAutoCorrelation(dfStrfLab:pandas.DataFrame, nlags:int):
+    """
+    Calculate the auto-correlation of the stimulus.
+    Args:
+        dfStrfLab: pandas.DataFrame
+            dataframe containing the stimulus and response data
+        nlags: int
+            number of timelags to calculate the auto-correlation over
+    """
+    if 'stim_loo_avg' not in dfStrfLab.columns:
+        print("Leave one out averages not found in dataframe. running calculateLeaveOneOutAverages()")
+        calculateLeaveOneOutAverages(dfStrfLab)
+
+    # subtract leave one out average from stims
+    stims = dfStrfLab['stim'] - dfStrfLab['stim_loo_avg'].apply(lambda x: x.reshape(-1, 1))
+    # correlate each frequency bin with each other frequency bin at all time lags
+    stim_autocorrs = stims.apply(autocorr2d, nlags = nlags) # n_spa_pairs x nlags for each stim
+    # normalize by number of trials
+    stim_autocorrs *= dfStrfLab['nTrials']
+
+    # sum over all stims
+    ac_sum = stim_autocorrs.sum()
+    # count the total trials for normalization
+    # Note this np.arange(x.shape[1], x.shape[1] - nlags, -1) when reflected, is the same as
+    # np.correlate(np.ones(nlen), np.ones(nlen), mode="same")[int(nlen/2-twindow[1]):int(nlen/2+twindow[1]+1)
+    counts = (stims.apply(lambda x: np.arange(x.shape[1], x.shape[1] - nlags, -1)) * dfStrfLab['nTrials']).sum()
+
+    # normalize ac_sum by the counts and return
+    ac_sum /= counts
+
+    #reflect AC to get negative lags
+    ac_sum = np.hstack((ac_sum[:,1:][:,::-1], ac_sum))
+    return ac_sum 
+
+
+
+
 
 def df_cal_AutoCorr(running_flag, DS, stim_avg, twindow, nband, PARAMS, JN_flag=None):
     global DF_PARAMS
@@ -41,9 +91,7 @@ def df_cal_AutoCorr(running_flag, DS, stim_avg, twindow, nband, PARAMS, JN_flag=
     
     # Initialize CS and CSJN variable
     CS = np.zeros((int(spa_corr), int(tot_corr)))
-    #CSJN = np.zeros((filecount, spa_corr, tot_corr))
     CS_ns = np.zeros((1, int(tot_corr)))
-    #CS_ns_JN = np.zeros((filecount, spa_corr, tot_corr))
     
     # See if we can use the stimuli's hashes instead of the whole stimulus for
     # the checksums of the autocorrelation. (Computing the checksum of a
@@ -52,11 +100,6 @@ def df_cal_AutoCorr(running_flag, DS, stim_avg, twindow, nband, PARAMS, JN_flag=
     use_stim_hashes = False
     outputPath = DF_PARAMS['outputPath']
     cached_dir, maxsize = 'null', 10
-    # if cached_dir != 'null':
-    #     hashes_of_stims = df_create_stim_cache_file(outputPath, DS)
-    #     use_stim_hashes = True
-    # else:
-    #     hashes_of_stims = ['Not used.']
     
     # Do calculation. The algorithm is based on FET's dcp_stim.c
     for fidx in range(filecount):  # Loop through all data files

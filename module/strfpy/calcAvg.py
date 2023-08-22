@@ -5,7 +5,97 @@
 import numpy as np
 import scipy.io as sio
 import os
+import pandas
 from scipy.signal import resample, hann
+
+def calculateAverage(dfStrfLab:pandas.DataFrame, apply_log:bool=False):
+    """
+    Calculate the average stimulus and response value across time.
+    Args:
+    - dfStrfLab (pandas.DataFrame): the dataframe containing the stimulus and response data.
+    - apply_log (bool, optional): whether to take the log of the stimulus data. Default is False.
+    Returns:
+    - stim_avg (ndarray): average stimulus value which is only function of space.
+    - resp_avg (ndarray): average response value which is only function of time.
+    - avg_firing_rate (float): the average firing rate of the response.
+    """
+
+    # first calculate the average stim (only function of space/frequency)
+    stims = dfStrfLab.stim
+    if apply_log:
+        stims = stims.apply(np.log10) # potential -inf values if there are zeros
+    stim_avgs = stims.apply(np.mean, axis=1) # get the average of each stim
+    stim_nums = stims.apply(np.size, axis=1) # get the number of time samples of each stim
+    stim_avg = np.average(stim_avgs,weights=stim_nums*dfStrfLab.nTrials) # weight each avg by how long the stim was, and how many trials there are
+    
+    # then calculate response average
+    resp_type = dfStrfLab.type.iloc[0]
+    # get the avg response for each stim per trial
+    # NB: This assumes dfStrfLab['psth'] is summed and not an average
+    # Could alternatively reclaculate using 'trial_psth'
+    resp_avg = dfStrfLab[resp_type] / dfStrfLab.nTrials
+
+    # single value which is average response over time
+    avg_firing_rate = np.average(dfStrfLab[resp_type].apply(np.sum) / dfStrfLab[resp_type].apply(len), weights= dfStrfLab.nTrials)
+
+    return stim_avg, resp_avg, avg_firing_rate
+
+def calculateLeaveOneOutAverages(dfStrfLab:pandas.DataFrame, apply_stim_log:bool=False, apply_resp_smoothing:bool=True, smooth_rt:int=41):
+    #  Calculating Time Varying mean firing rate
+    # Args:
+    # - dfStrfLab (pandas.DataFrame): the dataframe containing the stimulus and response data.
+    # - apply_smoothing (bool, optional): whether to apply smoothing to the time varying average. Default is True.
+    # - apply_log (bool, optional): whether to take the log of the stimulus data. Default is False.
+    # - smooth_rt (int, optional): the size of the smoothing window. Default is 41.
+    # Returns:
+    # - avg_resp_minus_one (ndarray): the time varying average response with one trial left out.
+    # calculate leave one out average
+    # this yields a matrix of indices leaving out the current row
+    N = len(dfStrfLab)
+    idx = np.arange(1, N) - np.tri(N, N-1, k=-1, dtype=bool)
+    
+    stims = dfStrfLab.stim
+    if apply_stim_log:
+        stims = stims.apply(np.log10) # potential -inf values if there are zeros
+    stim_avgs = np.vstack(stims.apply(np.mean, axis=1)) # get the average of each stim
+    stim_nums = np.asarray(stims.apply(np.size, axis=1)) # get the number of time samples of each stim
+    num_trials = np.asarray(dfStrfLab.nTrials)
+
+    all_stim_minus_one = stim_avgs[idx] # get the stim average for each stim except the current row
+    stim_nums_minus_one = stim_nums[idx] # get the number of time samples for each stim except the current row
+    num_trials_minus_one = num_trials[idx] # get the number of trials for each stim except the current row
+
+    # first multiply by the weights (num_trials and num_stims)
+    stim_weights = stim_nums_minus_one * num_trials_minus_one
+    weighted_stims = all_stim_minus_one * stim_weights[:,:,np.newaxis]
+    # now sum over the stims and divide by the summed weights
+    weighted_sums = weighted_stims.sum(axis=1)
+    avg_stim_minus_one = weighted_sums / stim_weights.sum(axis=1)[:,np.newaxis]
+    
+    
+    resp_type = dfStrfLab.type.iloc[0]
+    resp_avg = dfStrfLab[resp_type] / dfStrfLab.nTrials
+    max_resp_len = dfStrfLab[resp_type].apply(len).max() # get the max length of the responses
+    # stack all the un-normed psth into a matrix (nTrials x nTime)
+    # the trials that are smaller than the max len will have trailing zeros
+    all_resp = np.vstack(dfStrfLab.psth.apply(lambda x: np.pad(x,(0,max_resp_len-len(x)))))
+    all_counts = np.vstack([np.pad(np.ones(num_samp),(0,max_resp_len-num_samp))*nt for num_samp,nt in zip(resp_avg.apply(len),dfStrfLab.nTrials)])
+
+    # get the sum of all the responses except the current row 
+    # and divide by the sum of all the counts except the current row
+    all_resp_minus_one = all_resp[idx,:].sum(axis=1)
+    all_counts_minus_one = all_counts[idx,:].sum(axis=1)
+    # set all zeros to nan to prevent divide by zero
+    all_counts_minus_one[all_counts_minus_one==0] = np.nan
+    avg_resp_minus_one = all_resp_minus_one / all_counts_minus_one
+    # smooth the avg responses with the hann_window
+    if apply_resp_smoothing:
+        # create a window to do smoothing
+        hann_window = np.hanning(smooth_rt) / np.sum(np.hanning(smooth_rt))
+        avg_resp_minus_one = np.apply_along_axis(lambda m: np.convolve(m, hann_window, mode='same'), axis=1, arr=avg_resp_minus_one)
+    dfStrfLab['stim_loo_avg'] = [avg_stim_minus_one[x,:l] for (x,l) in zip(range(avg_stim_minus_one.shape[0]),stim_nums)]
+    dfStrfLab['psth_loo_avg'] = [avg_resp_minus_one[x,:l] for (x,l) in zip(range(avg_resp_minus_one.shape[0]),stim_nums)]
+    return avg_stim_minus_one,avg_resp_minus_one
 
 def df_cal_AVG(DDS, PARAMS, nband=None, psth_option=None, lin_flag=1, sil_window=0):
     """
