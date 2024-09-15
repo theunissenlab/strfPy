@@ -9,12 +9,6 @@ def df_cal_Strf(params, fstim, fstim_spike, stim_spike_JNf, stim_size, stim_spik
     if save_flag is None:
         save_flag = 0
 
-    # Try to get stimuli's durations from variable 'DS'
-    DS = DF_PARAMS['DS']
-    durs = []
-    for jj in range(len(DS)):
-        durs.append(DS[jj]['nlen'])
-
     # Forward Filter - The algorithm is from FET's filters2.m
     nf = (nt-1)//2 + 1
 
@@ -83,13 +77,6 @@ def df_cal_Strf(params, fstim, fstim_spike, stim_spike_JNf, stim_size, stim_spik
 
         is_mat = np.zeros((nb, nb))
         
-        # This is PC regresion with a smooth border (orginal STRF code)
-        #    for ii in range(nb):
-        #        if ii > ranktest[:,0]:
-        #            is_mat[ii,ii] = (1.0/ranktol)*np.exp(-((ii-ranktest[0])**2)/8)[0]
-        #        else:
-        #            is_mat[ii,ii] = 1.0/s[ii]
-
 
         # ridge regression - regularized normal equation
         for ii in range(nb):
@@ -151,3 +138,75 @@ def df_cal_Strf(params, fstim, fstim_spike, stim_spike_JNf, stim_size, stim_spik
         os.chdir(currentPath)
 
     return strfH, strfHJN, strfHJN_std
+
+
+def calculateSTRF(fstim, fstim_resp, fstim_resp_JNf, tol):
+    nstim = fstim_resp_JNf.shape[0]
+    nt = fstim.shape[1]
+    nf = (nt-1)//2 + 1
+    nb = fstim_resp.shape[0]
+
+    # reshape fstim to be a 3d array
+    u_tri = np.triu_indices(nb)
+    l_tri = np.tril_indices(nb) # -1 to exclude the diagonal
+    stim_mat = np.zeros((nf,nb,nb),dtype=np.complex_)
+    stim_mat[:,u_tri[0],u_tri[1]] = fstim[:,:nf].T
+    # add the complex conj to the lower triangle
+    # note thta this overwrites the diagonal w/ the conjugate (from old code)
+    stim_mat[:,l_tri[0],l_tri[1]] = np.swapaxes(stim_mat.conj(),1,2)[:,l_tri[0],l_tri[1]]
+
+    # calculate the norm of each stim_mat for each frequency
+    stimnorm = np.linalg.norm(stim_mat,axis=(1,2))
+
+    # find max norm of all matrices for ranktol
+    ranktol = tol*np.max(stimnorm)
+
+    # do an svd decomposition
+    # ranktest = np.linalg.matrix_rank(stim_mat,ranktol,hermitian=True)
+
+    u,s,v = np.linalg.svd(stim_mat)
+
+    # Calculate cumulative eigenvalues for potential display
+    # cums = np.cumsum(s,axis=1)/np.sum(s,axis=1)[:,np.newaxis]
+    
+    # Ridge Regression - regularized normal equation
+    # make array of identity matrices for each frequency
+    is_mat = np.broadcast_to(np.eye(nb),(nf,nb,nb))
+    is_mat = is_mat / (s + ranktol)[:,np.newaxis,:] # note this is a float op
+
+    # calculate the forward filter and the jackknife forward filter
+    h = v @ is_mat @ (u @ fstim_resp[:,:nf].T[:,:,np.newaxis])
+    hJN = v @ is_mat @ (u @ fstim_resp_JNf[:,:,:nf].T)
+
+    # setup frequency forward filter array
+    ffor = np.zeros((nb,nt),dtype=np.complex_)
+    h = h.squeeze().T
+    ffor[:,:nf] = h
+    ffor[:,nf:] = np.conj(h[:,:0:-1])
+    # setup jackknife forward filter array
+    fforJN = np.zeros((nb,nt,nstim),dtype=np.complex_)
+    hJN = hJN.swapaxes(0,1)
+    fforJN[:,:nf,:] = hJN
+    fforJN[:,nf:,:] = np.conj(hJN[:,:0:-1,:])
+
+    # calculate the STRF
+    nt2 = (nt-1)//2
+    xval = np.arange(-nt2, nt2+1)
+    wcausal = (np.arctan(xval)+np.pi/2)/np.pi
+
+    strfH = np.real(np.fft.ifft(ffor,axis=1))*wcausal
+    strfHJN = np.real(np.fft.ifft(fforJN,axis=1))*wcausal[np.newaxis,:,np.newaxis]
+    strfHJN_mean = np.mean(strfHJN,axis=2)
+    # now jacknife the STD from the jacknifed means
+    jn_idx = np.arange(1, nstim) - np.tri(nstim, nstim-1, k=-1, dtype=bool)
+
+    # This is prohibitevly memory intensive
+    #strfHJN_std = np.std(strfHJN[:,:,jn_idx],axis=3,ddof=0)*np.sqrt((nstim-2))
+
+    strfHJN_std = np.zeros_like(strfHJN)
+    # here is the unrolled version of above
+    for i in range(nstim):
+        strfHJN_std[:,:,i] = np.std(strfHJN[:,:,jn_idx[i]],axis=2,ddof=0)*np.sqrt((nstim-2))
+    return strfH, strfHJN, strfHJN_std
+
+

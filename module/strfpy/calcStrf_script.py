@@ -5,6 +5,7 @@
 import numpy as np
 import os
 import scipy.io as sio
+import pandas
 
 from .cache import df_create_stim_cache_file, df_create_spike_cache_file, df_checksum, df_dir_of_caches
 from .calcAvg import df_cal_AVG
@@ -13,6 +14,14 @@ from .calcCrossCorr import df_cal_CrossCorr, df_fft_AutoCrossCorr
 from .calcStrf import df_cal_Strf
 #from .DirectFit import df_load_function_text
 
+def calculateSTRFs(stimAutoCorr:np.array,stimRespCrossCorr:np.array,stimRespCrossCorrJN:np.array,
+                   nlags:int, tolerances:list, nstd:float):
+    """Calculate STRFs for a set of stimuli and responses.
+
+
+    """
+    fstim, fstim_spike, stim_spike_JNf = fftSmoothCorrelations(stimAutoCorr,stimRespCrossCorr, stimRespCrossCorrJN, nlags,nstd=.5)
+    pass
 
 def calcStrfs(params, CS, CSR, CSR_JN):
     global DF_PARAMS

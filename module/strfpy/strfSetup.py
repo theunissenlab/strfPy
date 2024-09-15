@@ -1,6 +1,9 @@
 import os
 import numpy as np
 import math
+import pandas as pd
+from scipy.signal import resample
+
 from .trnDirectFit import trnDirectFit
 
 def linInit(nIn, delays, outputNL=None, freqDom=None):
@@ -38,8 +41,7 @@ def linInit(nIn, delays, outputNL=None, freqDom=None):
     return strf
 
 
-
-def srdata2strflab(srData, useRaw=False, preprocOptions={}):
+def srdata2strflab_old(srData, useRaw=False, preprocOptions={}):
     if 'meanSubtractStim' not in preprocOptions:
         preprocOptions['meanSubtractStim'] = False
     if 'scaleStim' not in preprocOptions:
@@ -119,6 +121,77 @@ def srdata2strflab(srData, useRaw=False, preprocOptions={}):
             allresp -= srData['respAvg']
 
     return allstim, allresp, groupIndex
+
+def srdata2strflab(srData, preprocOptions={}):
+    """ Convert a srdata structure to a strflab structure.
+
+    Strflab data structure: TODO Update this docstring
+        stim: list of NChannels x NTimePoints stimulus matrices
+        resp: list of response dictionaries:
+                response dictionaries include:
+                    - psth: Nx1 column vector of N samples, or a list of spike time vectors.
+                    - nTrials: number of trials
+                    - sampleRate: sampling rate of response
+                    - rawSpikeTimes: list of nTrials Nx1 spike vectors (single trial PSTHs)
+                    - 
+                    - trials: 'type', 'sampleRate', 'rawSpikeTimes', 'rawSpikeIndicies', 'psth', 'nTrials'
+    Returns:
+        strflabData: strflab data structure
+    """
+    if 'meanSubtractStim' not in preprocOptions:
+        preprocOptions['meanSubtractStim'] = False
+    if 'scaleStim' not in preprocOptions:
+        preprocOptions['scaleStim'] = False
+    if 'meanSubtractResp' not in preprocOptions:
+        preprocOptions['meanSubtractResp'] = False
+
+    pairCount = len(srData['datasets'])
+    stimuli = []
+    responses = []
+    freqs = []
+    for k in range(pairCount):
+        ds = srData['datasets'][k]
+        stim = ds['stim']['tfrep']['spec']
+        if preprocOptions.get('meanSubtractStim'):
+            stim -= srData['stimAvg'].T
+        if preprocOptions.get('scaleStim'):
+            stim /= np.std(stim)
+
+        resp = ds['resp']
+        if preprocOptions.get('meanSubtractResp'):
+            if preprocOptions.get('tvMean'):
+                resp['psth'] -= srData['tvRespAvg'][k, :]
+            else:
+                resp['psth'] -= srData['respAvg']
+
+        if srData['stimSampleRate'] != srData['respSampleRate']:
+            # TODO this could be done better. look into different resamplers
+            #   The goal is to sample from respsamplerate to stimsamplerate
+            resp = resample(resp, int(stim.shape[1]))
+
+        if stim.shape[1] != len(resp['psth']):
+            # TODO Implement logging. this should be a warning
+            print("Warning: Stimulus and response are not the same length. Truncating longer one.")
+            min_len = min(stim.shape[1], len(resp['psth']))
+            stim = stim[:, :min_len]
+            resp['psth'] = resp['psth'][:min_len]
+            resp['trial_psth'] = [trial_psth[:min_len] for trial_psth in resp['trial_psth']]
+        
+        resp['sample_length'] = len(resp['psth'])
+        stimuli.append(stim)
+        responses.append(resp)
+        freqs.append(ds['stim']['tfrep']['f'])
+
+
+    # Create dataframe from responses
+    strflabData = pd.DataFrame(responses)
+
+    # add stim to response dataframe
+    strflabData['stim'] = stimuli
+    strflabData['freq'] = freqs
+    strflabData['stim_rawfile'] = [ds['stim']['rawFile'] for ds in srData['datasets']]
+    strflabData['stim_rawSR'] = [ds['stim']['rawSampleRate'] for ds in srData['datasets']]
+    return strflabData
 
 
 
@@ -295,8 +368,10 @@ def linFwd(strf, datIdx, dat):
         else:
             offset = thisshift % samplesize
             a[:offset] += at[-thisshift:]
-    
-    a += strf['b1']
+    if len(strf['b1'].shape) == 0:
+        a += strf['b1']
+    else:
+        a += strf['b1'][:samplesize]
     
     if strf['outputNL'] == 'linear':
         resp_strf = a

@@ -18,12 +18,12 @@ def crosscorr(stim, psth, nlags):
     nsamps = stim.shape[1]
     nbins = stim.shape[0]
     ac = np.zeros((nbins,len(lags)))
-    for lag in lags:
+    for ix,lag in enumerate(lags):
         stim_slice = slice(max(0,lag), min(nsamps,nsamps+lag))
         psth_slice = slice(stim_slice.start-lag, stim_slice.stop-lag)
         # nbin x nsamp @ nsamp x 1 matrix by row
         temp = stim[:,stim_slice] @ psth.T[psth_slice]
-        ac[:,lag] += temp.flatten()
+        ac[:,ix] += temp.flatten()
     return ac #/ np.arange(stim.shape[1], stim.shape[1] - nlags, -1)
 
 def calculateCrossCorr(dfStrfLab:pandas.DataFrame, nlags:int=74):
@@ -52,20 +52,19 @@ def calculateCrossCorr(dfStrfLab:pandas.DataFrame, nlags:int=74):
         ) * dfStrfLab['nTrials']
     weights = np.stack(weights.values)
 
-    # normalize cross_corrs by weights
-    #cross_corrs /= weights[:,np.newaxis,:]
+    # take weighted average cross corr 
+    avg_cross_corr = cross_corrs.sum(axis=0) / weights.sum(axis=0)[ np.newaxis, :]
 
     # now calculate Jackknifed cross-correlations
     # this yields a matrix of indices leaving out the current row
-    N = len(cross_corrs.shape[0])
+    N = cross_corrs.shape[0]
     idx = np.arange(1, N) - np.tri(N, N-1, k=-1, dtype=bool)
     all_cross_corr_minus_one = cross_corrs[idx] # shape (nfiles, nfiles-1, nbands, 2*nlags+1)
     all_weights_minus_one = weights[idx] # shape (nfiles, nfiles-1, 2*nlags+1)
     # now calculate the mean of the cross-correlations leaving out each file
     # this is the jackknifed cross-correlation
     cross_corrs_jn = all_cross_corr_minus_one.sum(axis=1) / all_weights_minus_one.sum(axis=1)[:, np.newaxis]
-
-    return cross_corrs
+    return avg_cross_corr, cross_corrs_jn
 
 def df_cal_CrossCorr(DS, PARAMS, stim_avg=None, avg_psth=None, psth=None,
                      twindow=None, nband=None, end_window=0, JN_flag=True):
@@ -284,9 +283,9 @@ def df_fft_AutoCrossCorr(stim, stim_spike, CSR_JN, TimeLag, NBAND, nstd_val):
     asize = np.array([nt, nb])
     w = np.hanning(nt)
     
-    stim_spike = np.fliplr(stim_spike)
+    stim_spike_flip = np.fliplr(stim_spike)
     for ib in range(nb):
-        stim_spike[ib,:] = stim_spike[ib,:] * w
+        stim_spike_flip[ib,:] = stim_spike_flip[ib,:] * w
     
     stim_spike_JN = np.zeros((nb, nt, nJN))
     for iJN in range(nJN):
@@ -296,7 +295,7 @@ def df_fft_AutoCrossCorr(stim, stim_spike, CSR_JN, TimeLag, NBAND, nstd_val):
     
     stim_spike_JNf = np.fft.fft(stim_spike_JN, axis=1)
     stim_spike_JNmf = np.mean(stim_spike_JNf, axis=2)
-    stim_spikef = np.fft.fft(stim_spike, axis=1)
+    stim_spikef = np.fft.fft(stim_spike_flip, axis=1)
 
     JNv = (nJN - 1) * (nJN - 1) / nJN
     j = 1j
@@ -307,15 +306,15 @@ def df_fft_AutoCrossCorr(stim, stim_spike, CSR_JN, TimeLag, NBAND, nstd_val):
     fstim = np.zeros(stim.shape, dtype=complex)
     stim_spike_sf = np.zeros((nb, nt),dtype=complex)#, nJN))
     #fstim_spike = stim_spike_sf
-    
+
     for ib in range(nb):
         itstart = 0
         itend = nf
         below = 0
         for it in range(nf):
             stim_spike_JNvf[ib,it] = JNv*np.cov(np.transpose(np.real(stim_spike_JNf[ib,it,:])))
-            + j*JNv*np.cov(np.transpose(np.imag(stim_spike_JNf[ib,it,:])))
-            rmean = np.real(stim_spike_JNmf[ib,it])
+            + JNv*np.cov(np.transpose(np.imag(stim_spike_JNf[ib,it,:])))*1j
+            rmean = np.real(stim_spikef[ib,it])
             rstd = np.sqrt(np.real(stim_spike_JNvf[ib,it]))
             imean = np.imag(stim_spikef[ib,it])
             istd = np.sqrt(np.imag(stim_spike_JNvf[ib,it]))
@@ -323,9 +322,8 @@ def df_fft_AutoCrossCorr(stim, stim_spike, CSR_JN, TimeLag, NBAND, nstd_val):
                 if itstart == 0:
                     itstart = it
                 below = below + 1
-            else:
-                below = 0
-                itstart = 0
+                if below == 3:
+                    itend = it
             stim_spike_sf[ib,it] = rmean + j*imean
             #fstim[ib,itstart:itend] = np.real(np.fft.ifft(stim_spikef[ib,itstart:itend]))
             #fstim_spike[ib,itstart:itend] = np.real(np.fft.ifft(stim_spike_JNf[ib,itstart:itend,:], axis=1))
@@ -347,5 +345,67 @@ def df_fft_AutoCrossCorr(stim, stim_spike, CSR_JN, TimeLag, NBAND, nstd_val):
         sh_stim[nt2+1:nt]=w_stim[:nt2]
         fstim[i,:] = np.fft.fft(sh_stim)
     return fstim, fstim_spike, stim_spike_JNf
+
+def fftSmoothCorrelations(stim_stim, stim_resp, stim_resp_JN, nlags, apply_filter=True, nstd):
+    """ Takes FFT of autocorr and cross corr matrices and smooths them
+    Args:
+        stim_stim (numpy.ndarray): Stimulus autocorrelation matrix (npairsxnbandx(2*nlag+1)))
+        stim_resp (numpy.ndarray): Stimulus-response cross-correlation matrix (nBandPairsxntime)
+        stim_resp_JN (numpy.ndarray): Jackknifed stimulus-response cross-correlation matrix (npairsxnBandPairsxntime)
+        TimeLag (int): Number of time lags to use in smoothing
+        nstd_val (float): Number of standard deviations to use in smoothing
+    """
+    # flip the stim-response cross correlations  along the freq axis so that TODO: why?
+
+    
+    # window the simRespCrossCorrelations
+    nT = 2 * nlags + 1 # number of time lags (-nlags to nlags)
+    w = np.hanning(nT)
+
+    # Apply FFT to stim-resp cross correlations
+    stim_resp_JNf = np.fft.fft(np.flip(stim_resp_JN, axis=2) * w, axis=2) # fft along time lag axis
+    stim_spike_JNmf = np.mean(stim_resp_JNf, axis=2)
+    stim_respf = np.fft.fft(np.flip(stim_resp, axis=1) * w, axis=1) # fft along time lag axis
+    
+    nJN = stim_resp_JN.shape[0]
+    JNv = (nJN - 1) * (nJN - 1) / nJN
+    zF = 0
+    nF = (nT-1)//2 +1
+    
+    if apply_filter:
+        # calculate covariance in order to threshold
+        # remove average across the Jackknifes to calculate covariance
+        stim_resp_sub_avg = stim_resp_JNf[:,:,zF:nF] - np.mean(stim_resp_JNf[:,:,zF:nF], axis=0, keepdims=True)
+        # calculate the covariance across the jackknife dimension
+        stim_resp_var_real = JNv * np.sum(stim_resp_sub_avg.real * np.conj(stim_resp_sub_avg.real), axis=0) / (stim_resp_sub_avg.shape[0] - 1)
+        stim_resp_var_imag = JNv * np.sum(stim_resp_sub_avg.imag * np.conj(stim_resp_sub_avg.imag), axis=0) / (stim_resp_sub_avg.shape[0] - 1)
+        
+        # mask values who's real and imag are below threshold
+        real_mask = np.abs(stim_respf[:,zF:nF].real) < nstd * np.sqrt(stim_resp_var_real)
+        imag_mask = np.abs(stim_respf[:,zF:nF].imag) < nstd * np.sqrt(stim_resp_var_imag)
+        mask = np.logical_and(real_mask, imag_mask)
+
+        # start of tapering will be first time the real and imag are below threshold
+        start_idx = np.argmax(mask, axis=1)
+        # end of tapering will be the after 3 threshold crossings
+        end_idx = np.argmax(np.cumsum(mask, axis=1) >= 3,axis=1)
+        end_idx[end_idx == 0] = nF
+
+        # taper the stim-resp cross correlations
+        taper_mask = np.logical_and(np.arange(nF-zF) > start_idx[:, np.newaxis], end_idx[:,np.newaxis] > start_idx[:, np.newaxis])
+        expvals = np.exp(-0.5 * (np.arange(nF-zF) - start_idx[:, np.newaxis])**2 / (end_idx[:, np.newaxis] - start_idx[:, np.newaxis])**2)
+        stim_respf[:,zF:nF][taper_mask] *= expvals[taper_mask]
+        stim_resp_JNf[:,:,zF:nF][:,taper_mask] *= expvals[np.newaxis,taper_mask]
+        
+        # fill the end of the stim-resp cross correlations with the complex conjugate
+        stim_respf[:,nF-1+zF:-1] = np.conj(stim_respf[:,zF+1:nF][:,::-1])
+        stim_resp_JNf[:,:,nF-1+zF:-1] = np.conj(stim_resp_JNf[:,:,zF+1:nF][:,:,::-1])
+
+    # window stim then calculate fft
+    nt = stim_stim.shape[1]
+    nt2=int((nt-1)/2)
+
+    fstim = np.fft.fft(np.roll(stim_stim * w[np.newaxis, :], nt2+1, axis=1), axis=1)
+    return fstim, stim_respf, stim_resp_JNf
 
 

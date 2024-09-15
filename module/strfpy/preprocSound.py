@@ -4,16 +4,176 @@ import numpy as np
 from scipy.io import loadmat
 from scipy.signal import convolve
 
-sys.path.append("/Users/frederictheunissen/Code/crcns-kailin/module")
-from strfpy.timeFreq import timefreq
+from .timeFreq import timefreq
 import pandas as pd
 
 
-
-def preprocess_sound(raw_stim_files, raw_resp_files, preprocess_type='ft', stim_params=None,
-                     output_dir=None, stim_output_pattern='preprocessed_stim_%d',
-                     resp_output_pattern='preprocessed_resp_%d'):
+def preprocess_sound_from_df(playback_and_response_df:pd.DataFrame, preprocess_type:str='ft', stim_params:dict=None,
+                     output_dir:str=None, stim_output_pattern:str='preprocessed_stim_%s',
+                     resp_output_pattern:str='preprocessed_resp_%d'):
+    """Preprocess a set of stimuli and responses from the pipeline
+    Args:
+        playback_and_response_df (pandas.DataFrame): Dataframe from GenPlaybackSpikesDB containing stim and response pairs.
+        preprocess_type (str): Type of time-frequency representation. Must be one of 'ft', 'wavelet', or 'lyons'.
+        stim_params (dict): Parameters to assign to tfrep (optional). If not given, default values will be specified for type.
+        output_dir (str): Directory to save preprocessed stimuli and responses.
+        stim_output_pattern (str): Pattern for naming preprocessed stimuli. Must contain a single %s.
+        resp_output_pattern (str): Pattern for naming preprocessed responses. Must contain a single %d.
+    """
+    if preprocess_type not in ['ft', 'wavelet', 'lyons']:
+        raise ValueError('Unknown time-frequency representation type: %s' % preprocess_type)
     
+    if stim_params is None:
+        stim_params = {}
+
+    if output_dir is None:
+        output_dir = os.path.join(os.getcwd(), 'temp')
+    os.makedirs(output_dir, exist_ok=True)
+
+    stim_sample_rate = 1000.0
+    resp_sample_rate = 1000.0
+
+    # setup stim_params structure
+    stim_params['fband'] = 125
+    stim_params['nstd'] = 6
+    stim_params['high_freq'] = 8000
+    stim_params['low_freq'] = 250
+    stim_params['log'] = 1
+    stim_params['stim_rate'] = stim_sample_rate # this will be the STFT sample rate
+    stim_params['output_pattern'] = stim_output_pattern
+    stim_params['output_dir'] = output_dir
+
+    DBNOISE = 80.0
+
+    # TODO: First pass I will consider each interrupted trial its own stimulus
+    #       In the future, I will want to concatenate all interrupted trials of the same stim 
+    #       into one stimulus.
+    uninterrupted_df = playback_and_response_df[playback_and_response_df['Peck'] == 0]
+    interrupted_df = playback_and_response_df[playback_and_response_df['Peck'] != 0]
+    
+    datasets = []
+    # first deal with uninterrupted trials
+    for i, stim_df in uninterrupted_df.groupby('Rendition_Name'):
+        ds = preprocess_stimuli_df(stim_df, stim_params, preprocess_type, resp_sample_rate)
+        datasets.append(ds)
+
+    # now deal with interrupted trials
+    for i, stim_df in interrupted_df.iterrows():
+        ds = preprocess_stimuli_df(stim_df, stim_params, preprocess_type, resp_sample_rate)
+        datasets.append(ds)
+
+    # Threshold the spectrogram to DBNOISE
+    max_stim_amp = np.max([ds['stim']['maxStimAmp'] for ds in datasets])
+    for k in range(len(datasets)):
+        spec = datasets[k]['stim']['tfrep']['spec']
+        spec = spec - max_stim_amp + DBNOISE
+        spec[spec<0] = 0.0
+        datasets[k]['stim']['tfrep']['spec'] = spec
+
+    # check that all stims have the same number of channels
+    if not np.all([ds['stim']['nStimChannels'] == datasets[0]['stim']['nStimChannels'] for ds in datasets]):
+        raise ValueError('All stimuli must have the same number of channels')
+
+    # set dataset wide values
+    srData = {
+        'stimSampleRate': stim_sample_rate,
+        'respSampleRate': resp_sample_rate,
+        'nStimChannels': datasets[0]['stim']['nStimChannels'],
+        'datasets': datasets
+    }
+
+    # return srData
+    # compute averages
+    max_resp_len = np.max([len(ds['resp']['psth']) for ds in datasets])
+    stim_avg, resp_avg, tv_resp_avg = compute_srdata_means(srData, max_resp_len)
+    srData['stimAvg'] = stim_avg
+    srData['respAvg'] = resp_avg
+    srData['tvRespAvg'] = tv_resp_avg
+    srData['type'] = preprocess_type
+
+    return srData
+
+
+def preprocess_stimuli_df(stim_df,stim_params,preprocess_type, resp_sample_rate=1000.0):
+        ds = {}
+        is_row = len(stim_df.shape) == 1
+        # preprocess responses to a single stimulus
+        if not is_row and len(stim_df.Rendition_Name.unique()) > 1:
+            raise ValueError('More than one stimuli present')
+        
+        # first process the stimulus
+        if is_row:
+            stim_name = os.path.basename(stim_df.Rendition_Name).strip('.wav')
+        else:
+            stim_name = os.path.basename(stim_df.Rendition_Name.iloc[0]).strip('.wav')
+        # preprocess stimulus
+        stim_output_fname = os.path.join(stim_params['output_dir'], stim_params['output_pattern'] % (stim_name))
+
+        if os.path.isfile(stim_output_fname):
+            # use cached preprocessed stimulus
+            #print(f'Using cached preprocessed stimulus from {stim_output_fname}')
+            stim = np.load(stim_output_fname,  allow_pickle = True)['stim'].item()
+            ds['stim'] = stim
+        else:
+            # we have not processed this stimulus yet
+            # get the stim name
+            if is_row:
+                wav_file_name = stim_df.PlaybackFile
+            else:
+                wav_file_name = stim_df.PlaybackFile.iloc[0]
+
+            # Compute a time-frequency representation of the stimulus
+            tfrep = timefreq(wav_file_name, preprocess_type, stim_params)
+            # store metadata in a dictionary
+            stim = {
+                'type': 'tfrep',
+                'rawFile': wav_file_name,
+                'tfrep': tfrep,
+                'rawSampleRate': tfrep['params']['rawSampleRate'],
+                'sampleRate': stim_params['stim_rate'],
+                'stimLength': tfrep['spec'].shape[1] / stim_params['stim_rate'],
+                'nStimChannels' : tfrep['f'].shape[0],
+                'maxStimAmp': np.max(tfrep["spec"])
+            }
+            np.savez(stim_output_fname, stim=stim)
+            ds['stim'] = stim
+
+        # now trim the stim to be the length of the trial
+        if is_row:
+            if stim_df.Peck > 0:
+                ds['stim']['stimLength'] = stim_df.Peck
+                ds['stim']['tfrep']['spec'] = ds['stim']['tfrep']['spec'][:, :round(stim_df.Peck*stim_params['stim_rate'])]
+        else:
+            # TODO: If they are not the same length this will need to change
+            if stim_df.Peck.iloc[0] > 0:
+                ds['stim']['stimLength'] = stim_df.Peck.iloc[0]
+                ds['stim']['tfrep']['spec'] = ds['stim']['tfrep']['spec'][:, :round(stim_df.Peck.iloc[0]*stim_params['stim_rate'])]
+
+        # take all spike_times and convert to ms
+        # only take times above 0
+        if is_row:
+            ms_times = (stim_df.Spike_Times - stim_df.Start) * 1000.0
+            spike_times_ms = [ms_times[ms_times > 0]]
+        else:
+            spike_times_ms = [x[x>0] for x in (stim_df.Spike_Times - stim_df.Start).values * 1000.0]
+        resp = preprocess_response(spike_times_ms, stim['stimLength'], resp_sample_rate)
+        ds['resp'] = resp
+
+        return ds
+
+def preprocess_sound(raw_stim_files:list, raw_resp_files:list, preprocess_type:str='ft', stim_params:dict=None,
+                     output_dir:str=None, stim_output_pattern:str='preprocessed_stim_%d',
+                     resp_output_pattern:str='preprocessed_resp_%d'):
+    """Preprocess a set of stimuli and responses.
+    Args:
+        raw_stim_files (list): List of .wav files containing the stimuli.
+        raw_resp_files (list): List of .txt files containing the responses.
+        preprocess_type (str): Type of time-frequency representation. Must be one of 'ft', 'wavelet', or 'lyons'.
+        stim_params (dict): Parameters to assign to tfrep (optional). If not given, default values will be specified for type.
+        output_dir (str): Directory to save preprocessed stimuli and responses.
+        stim_output_pattern (str): Pattern for naming preprocessed stimuli. Must contain a single %d.
+        resp_output_pattern (str): Pattern for naming preprocessed responses. Must contain a single %d.
+    """
     if len(raw_stim_files) != len(raw_resp_files):
         raise ValueError('# of stim and response files must be the same!')
     
@@ -144,14 +304,16 @@ def read_spikes_from_file(file_name):
 
 def preprocess_response(spikeTrials, stimLength, sampleRate):
     spikeIndicies = []
+    trial_psths = []
     for trials in spikeTrials:
         # turn spike times (ms) into indexes at response sample rate
-        
         stimes = np.round(trials*1e-3 * sampleRate).astype(int) - 1
         # Choose within stimulus
         stimes = stimes[stimes >= 0]
         stimes = stimes[stimes < np.round(stimLength*sampleRate)]
         spikeIndicies.append(stimes)
+        # also save individual psths per trial
+        trial_psths.append(make_psth(stimes, np.round(stimLength*sampleRate), 1))
 
     psth = make_psth(spikeIndicies, np.round(stimLength*sampleRate), 1)
     resp = {
@@ -159,21 +321,38 @@ def preprocess_response(spikeTrials, stimLength, sampleRate):
         'sampleRate': sampleRate,
         'rawSpikeTimes': spikeTrials,
         'rawSpikeIndicies': spikeIndicies,
-        'psth': psth
+        'psth': psth,
+        'trial_psth': trial_psths,
+        'nTrials': len(spikeTrials)
     }
     return resp
 
-
-def make_psth(spikeTrialsInd, stimdur, binsize):
+def make_psth(spikeTrialsInd:list, stimdur:int, binsize:int):
+    """Make a PSTH from a list of spike times (in samples) and a stimulus duration (in samples)
+    Args:
+        spikeTrialsInd (list): list of spike times (in samples)
+        stimdur (int): stimulus duration (in samples)
+        binsize (int): bin size (in samples)
+    """
     nbins = int(np.round(stimdur / binsize))
     psth = np.zeros(nbins)
-
-    ntrials = len(spikeTrialsInd)
 
     for trial in spikeTrialsInd:
         sindxs = np.round(trial / binsize).astype(int) 
         psth[sindxs] += 1
 
+    return psth
+
+def make_normed_psth(spikeTrialsInd:list, stimdur:int, binsize:int):
+    """Make a normalized PSTH from a list of spike times (in samples) and a stimulus duration (in samples)
+    Args:
+        spikeTrialsInd (list): list of spike times (in samples)
+        stimdur (int): stimulus duration (in samples)
+        binsize (int): bin size (in samples)
+    """
+
+    psth = make_psth(spikeTrialsInd, stimdur, binsize)
+    ntrials = len(spikeTrialsInd)
     psth /= ntrials
     return psth
 
@@ -183,35 +362,34 @@ def compute_srdata_means(srData, maxRespLen):
 
     pairCount = len(srData['datasets'])
 
-
     # compute stim and response averages
     stimSum = np.zeros((srData['nStimChannels'], ))
     stimCountSum = 0
+    respCountSum = 0
     respSum = np.zeros((1, maxRespLen))
     meanSum = 0
     tvRespCount = np.zeros((pairCount, maxRespLen))
 
     # first compute all the sums
     for k in range(pairCount):
-
         # Stimulus mean for each spatial dimension (i.e. frequency band for spectro-temporal)
         ds = srData['datasets'][k]
         spec = ds['stim']['tfrep']['spec']
-        stimSum += np.sum(spec, axis=1)
-        stimCountSum += spec.shape[1]
+        stimSum += np.sum(spec, axis=1) # sum across time
+        stimCountSum += spec.shape[1] # weight by number of timebins
 
-        # Response averates
+        # Response averages
+        # get unnormed psth
         psth = ds['resp']['psth']
 
         # Time varying average response
-        rlen = maxRespLen - len(psth)
-        nresp = np.append(psth, np.zeros((1, rlen)))
-        respSum = respSum + nresp
-        tvIndx = np.arange(len(psth))
-        tvRespCount[k, tvIndx] = 1
+        respSum[0,:len(psth)] += psth
+        # weight by the number of trials
+        tvRespCount[k, :len(psth)] = ds['resp']['nTrials']
 
         # Overall response average
         meanSum = meanSum + psth.mean()
+        respCountSum += ds['resp']['nTrials'] * len(psth)
 
     # construct the time-varying mean for the response. each row of the tv-mean is the average PSTH (across pairs)
     # computed with the PSTH of that row index left out
@@ -230,7 +408,7 @@ def compute_srdata_means(srData, maxRespLen):
 
         # subtract off this pair's PSTH, construct mean
         tvcnts = tvRespCountSum - tvRespCount[k, :]
-        tvcnts[tvcnts < 1] = 1
+        tvcnts[tvcnts < 1] = 1 # TODO: this is a hack to avoid divide by zero
 
         tvRespAvg[k, :] = (respSum - nresp) / tvcnts
 
@@ -241,7 +419,7 @@ def compute_srdata_means(srData, maxRespLen):
         tvRespAvg[k, :] = pprod[sindx:eindx]
 
     stimAvg = stimSum / stimCountSum
-    respAvg = meanSum / pairCount
+    respAvg = meanSum / respCountSum
 
     return stimAvg, respAvg, tvRespAvg
 
@@ -259,10 +437,13 @@ def split_psth(spikeTrialsInd, stimLengthMs):
             spikeTrials1[indx-1] = trial
         else:
             spikeTrials2[indx-1] = trial
+    # if odd, truncate spikeTrials2
+    if len(spikeTrialsInd)%2 == 1:
+        spikeTrials2 = spikeTrials2[:-1]
             
-    psth = make_psth(spikeTrialsInd, stimLengthMs, 1)
-    psth1 = make_psth(spikeTrials1, stimLengthMs, 1)
-    psth2 = make_psth(spikeTrials2, stimLengthMs, 1)
+    psth = make_normed_psth(spikeTrialsInd, stimLengthMs, 1)
+    psth1 = make_normed_psth(spikeTrials1, stimLengthMs, 1)
+    psth2 = make_normed_psth(spikeTrials2, stimLengthMs, 1)
 
     psthdata = {'psth': psth, 'psth_half1': psth1, 'psth_half2': psth2}
     return psthdata

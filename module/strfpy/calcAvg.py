@@ -40,7 +40,7 @@ def calculateAverage(dfStrfLab:pandas.DataFrame, apply_log:bool=False):
 
     return stim_avg, resp_avg, avg_firing_rate
 
-def calculateLeaveOneOutAverages(dfStrfLab:pandas.DataFrame, apply_stim_log:bool=False, apply_resp_smoothing:bool=True, smooth_rt:int=41):
+def calculateLeaveOneOutAverages(dfStrfLab:pandas.DataFrame, apply_stim_log:bool=False, apply_resp_smoothing:bool=True, smooth_rt:int=41, vectorize:bool=True):
     #  Calculating Time Varying mean firing rate
     # Args:
     # - dfStrfLab (pandas.DataFrame): the dataframe containing the stimulus and response data.
@@ -61,18 +61,6 @@ def calculateLeaveOneOutAverages(dfStrfLab:pandas.DataFrame, apply_stim_log:bool
     stim_nums = np.asarray(stims.apply(np.size, axis=1)) # get the number of time samples of each stim
     num_trials = np.asarray(dfStrfLab.nTrials)
 
-    all_stim_minus_one = stim_avgs[idx] # get the stim average for each stim except the current row
-    stim_nums_minus_one = stim_nums[idx] # get the number of time samples for each stim except the current row
-    num_trials_minus_one = num_trials[idx] # get the number of trials for each stim except the current row
-
-    # first multiply by the weights (num_trials and num_stims)
-    stim_weights = stim_nums_minus_one * num_trials_minus_one
-    weighted_stims = all_stim_minus_one * stim_weights[:,:,np.newaxis]
-    # now sum over the stims and divide by the summed weights
-    weighted_sums = weighted_stims.sum(axis=1)
-    avg_stim_minus_one = weighted_sums / stim_weights.sum(axis=1)[:,np.newaxis]
-    
-    
     resp_type = dfStrfLab.type.iloc[0]
     resp_avg = dfStrfLab[resp_type] / dfStrfLab.nTrials
     max_resp_len = dfStrfLab[resp_type].apply(len).max() # get the max length of the responses
@@ -81,13 +69,51 @@ def calculateLeaveOneOutAverages(dfStrfLab:pandas.DataFrame, apply_stim_log:bool
     all_resp = np.vstack(dfStrfLab.psth.apply(lambda x: np.pad(x,(0,max_resp_len-len(x)))))
     all_counts = np.vstack([np.pad(np.ones(num_samp),(0,max_resp_len-num_samp))*nt for num_samp,nt in zip(resp_avg.apply(len),dfStrfLab.nTrials)])
 
-    # get the sum of all the responses except the current row 
-    # and divide by the sum of all the counts except the current row
-    all_resp_minus_one = all_resp[idx,:].sum(axis=1)
-    all_counts_minus_one = all_counts[idx,:].sum(axis=1)
-    # set all zeros to nan to prevent divide by zero
-    all_counts_minus_one[all_counts_minus_one==0] = np.nan
-    avg_resp_minus_one = all_resp_minus_one / all_counts_minus_one
+    if vectorize:
+        all_stim_minus_one = stim_avgs[idx] # get the stim average for each stim except the current row
+        stim_nums_minus_one = stim_nums[idx] # get the number of time samples for each stim except the current row
+        num_trials_minus_one = num_trials[idx] # get the number of trials for each stim except the current row
+
+        # first multiply by the weights (num_trials and num_stims)
+        stim_weights = stim_nums_minus_one * num_trials_minus_one
+        weighted_stims = all_stim_minus_one * stim_weights[:,:,np.newaxis]
+        # now sum over the stims and divide by the summed weights
+        weighted_sums = weighted_stims.sum(axis=1)
+        avg_stim_minus_one = weighted_sums / stim_weights.sum(axis=1)[:,np.newaxis]
+        
+        # get the sum of all the responses except the current row 
+        # and divide by the sum of all the counts except the current row
+        all_resp_minus_one = all_resp[idx,:].sum(axis=1)
+        all_counts_minus_one = all_counts[idx,:].sum(axis=1)
+        # set all zeros to nan to prevent divide by zero
+        all_counts_minus_one[all_counts_minus_one==0] = 1
+        avg_resp_minus_one = all_resp_minus_one / all_counts_minus_one
+    else:
+        # If we want to do each stim individually...
+        # This takes longer but for large datasets is more memory efficient
+        avg_stim_minus_one = np.zeros_like(stim_avgs)
+        avg_resp_minus_one = np.zeros_like(all_resp)
+        for i in np.arange(N):
+            # get the indices of all the rows except the current row
+            inds = idx[i]
+            all_stim_minus_one = stim_avgs[inds] # get the stim average for each stim except the current row
+            stim_nums_minus_one = stim_nums[inds] # get the number of time samples for each stim except the current row
+            num_trials_minus_one = num_trials[inds] # get the number of trials for each stim except the current row
+
+            # first multiply by the weights (num_trials and num_stims)
+            stim_weights = stim_nums_minus_one * num_trials_minus_one
+            weighted_stims = all_stim_minus_one * stim_weights[:,:,np.newaxis]
+            # now sum over the stims and divide by the summed weights
+            weighted_sums = weighted_stims.sum(axis=1)
+            avg_stim_minus_one = weighted_sums / stim_weights.sum(axis=1)[:,np.newaxis]
+            
+            # get the sum of all the responses except the current row 
+            # and divide by the sum of all the counts except the current row
+            all_resp_minus_one = all_resp[inds,:].sum(axis=1)
+            all_counts_minus_one = all_counts[inds,:].sum(axis=1)
+            # set all zeros to nan to prevent divide by zero
+            all_counts_minus_one[all_counts_minus_one==0] = 1
+            avg_resp_minus_one = all_resp_minus_one / all_counts_minus_one
     # smooth the avg responses with the hann_window
     if apply_resp_smoothing:
         # create a window to do smoothing

@@ -138,14 +138,16 @@ def trnDirectFit(modelParams=None, datIdx=None, options=None, globalDat=None, *a
                 if not options['timeVaryingPSTH']:
                     mresp = mresp + respAvg
                 else:
-                    mresp = mresp + tvRespAvg[p, :len(mresp)]
+                    mresp = mresp + tvRespAvg[p, :mresp.shape[1]]
                 
                 #compute coherence and info across pairs
                 # doing this for single trials
                 # for (data in rawData):
                 cStruct = compute_coherence_mean(mresp, rresp, options['respSampleRate'], options['infoFreqCutoff'], options['infoWindowSize'] )
-                infoSum += np.real(cStruct['info'])*len(mresp)
-                infoTBins += len(mresp)
+                if np.isnan(cStruct['info']):
+                    continue
+                infoSum += np.real(cStruct['info'])*mresp.shape[1]
+                infoTBins += mresp.shape[1]
                 
         
             avgInfo = infoSum / infoTBins   # This is now normalized by the stimulus length....

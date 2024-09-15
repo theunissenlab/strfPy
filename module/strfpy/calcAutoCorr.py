@@ -13,11 +13,14 @@ import itertools
 def autocorr2d(stim, nlags):
     # TODO there may be a smarter way to do this with tensors
     # also could use FFT to speed it up
-    ac = np.zeros((len(np.triu_indices(stim.shape[0])[0]),nlags))
-    for lag in range(nlags):
-        temp = stim[:,lag:] @ stim.T[:stim.shape[1]-lag,:]
+    nsamps = stim.shape[1]
+    ac = np.zeros((len(np.triu_indices(stim.shape[0])[0]),2*nlags+1))
+    for lag in range(-nlags, nlags+1):
+        stim_slice = slice(max(0,lag), min(nsamps,nsamps+lag))
+        stimT_slice = slice(stim_slice.start-lag, stim_slice.stop-lag)
+        temp = stim[:,stim_slice] @ stim.T[stimT_slice,:]
         # temp = np.outer(stim[:,onevect],st[othervect,:])
-        ac[:,lag] += temp[np.triu_indices(stim.shape[0])]
+        ac[:,nlags + lag] += temp[np.triu_indices(stim.shape[0])]
     return ac #/ np.arange(stim.shape[1], stim.shape[1] - nlags, -1)
 
 def calculateAutoCorrelation(dfStrfLab:pandas.DataFrame, nlags:int):
@@ -45,13 +48,13 @@ def calculateAutoCorrelation(dfStrfLab:pandas.DataFrame, nlags:int):
     # count the total trials for normalization
     # Note this np.arange(x.shape[1], x.shape[1] - nlags, -1) when reflected, is the same as
     # np.correlate(np.ones(nlen), np.ones(nlen), mode="same")[int(nlen/2-twindow[1]):int(nlen/2+twindow[1]+1)
-    counts = (stims.apply(lambda x: np.arange(x.shape[1], x.shape[1] - nlags, -1)) * dfStrfLab['nTrials']).sum()
+    counts = dfStrfLab['stim'].apply(lambda x:
+        np.correlate(np.ones(x.shape[1]), np.ones(x.shape[1]), mode="same")[int(x.shape[1]/2-nlags):int(x.shape[1]/2+nlags+1)]
+        ) * dfStrfLab['nTrials']
+    counts = np.stack(counts.values)
 
     # normalize ac_sum by the counts and return
-    ac_sum /= counts
-
-    #reflect AC to get negative lags
-    ac_sum = np.hstack((ac_sum[:,1:][:,::-1], ac_sum))
+    ac_sum /= counts.sum(axis=0)
     return ac_sum 
 
 
