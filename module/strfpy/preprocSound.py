@@ -2,13 +2,509 @@ import os
 import sys
 import numpy as np
 from scipy.io import loadmat
-from scipy.signal import convolve
+from scipy.signal import convolve, windows
 
-sys.path.append("/Users/frederictheunissen/Code/crcns-kailin/module")
-from strfpy.timeFreq import timefreq
+#sys.path.append("/Users/frederictheunissen/Code/crcns-kailin/module")
+from strfpy.timeFreq import timefreq, timefreq_raw
 import pandas as pd
+import pynwb as nwb
+
+def weighted_mean(x, w):
+    """Weighted Mean"""
+    return np.sum(x * w) / np.sum(w)
+
+def weighted_cov(x, y, w):
+    """Weighted Covariance"""
+    return np.sum(w * (x - weighted_mean(x, w)) * (y - weighted_mean(y, w))) / np.sum(w)
+
+def weighted_corr(x, y, w):
+    """Weighted Correlation"""
+    return weighted_cov(x, y, w) / np.sqrt(weighted_cov(x, x, w) * weighted_cov(y, y, w))
 
 
+def preprocess_sound_raw_nospike(stim_lookup, all_trials, preprocess_type='ft', stim_params=None):
+    # params
+    DBNOISE = 80.0  
+    stim_sample_rate = 1000.0
+    
+    # now we have all the spike times aligned to the stimulus onset for all stimuli
+    # now we group them by stimulus and preprocess them
+    srData = {}
+    datasets = []
+    max_stim_amp = 0.0
+    n_stim_channels = -1
+    for stim_name, stim_df in all_trials.groupby('stimuli_name'):
+        ds = {}
+        # preprocess the stimuli by loading the wav and generating the tfrep
+        wav_file_name = stim_name #raw_stim_files[k]
+        stim_fs, stim_data = stim_lookup(stim_name)
+        stim_params['fband'] = 120
+        stim_params['nstd'] = 6
+        stim_params['high_freq'] = 8000
+        stim_params['low_freq'] = 250
+        stim_params['log'] = 1
+        stim_params['stim_rate'] = stim_sample_rate
+        tfrep = timefreq_raw(stim_data,stim_fs, preprocess_type, stim_params)
+        stim = {
+            'type': 'tfrep',
+            'rawFile': stim_name,
+            'tfrep': tfrep,
+            'rawSampleRate': tfrep['params']['rawSampleRate'],
+            'sampleRate': stim_sample_rate,
+            'stimLength': tfrep['spec'].shape[1] / stim_sample_rate,
+            'nStimChannels' : tfrep['f'].shape[0],
+            'maxStimAmp': np.max(tfrep["spec"])
+        }
+        ds['stim'] = stim
+
+        if (n_stim_channels == -1 ):
+            n_stim_channels = stim['nStimChannels']
+        else:
+            if (n_stim_channels != stim['nStimChannels']):
+                print('Error: number of spatial (frequency) channels does not match across stimuli')
+
+        max_stim_amp = np.max((max_stim_amp, stim['maxStimAmp']))
+
+        datasets.append(ds)
+    # end loop over stimuli
+
+    # Threshold spectrogram - this should probably be elsewhere or at least consistent with log
+    for k in range(len(datasets)):
+        spec = datasets[k]['stim']['tfrep']['spec']
+        spec = spec - max_stim_amp + DBNOISE
+        spec[spec<0] = 0.0
+        datasets[k]['stim']['tfrep']['spec'] = spec
+
+    
+    
+    # set dataset-wide values
+    srData = {
+        'stimSampleRate': stim_sample_rate,
+        'nStimChannels': n_stim_channels,
+        'datasets': datasets
+    }
+
+    # # return srData
+    # # compute averages
+    # stim_avg, resp_avg, tv_resp_avg = compute_srdata_means(srData, max_resp_len)
+    # srData['stimAvg'] = stim_avg
+    srData['type'] = preprocess_type
+
+    return srData
+
+def preprocess_sound_raw(unit_spike_times, stim_lookup, all_trials, preprocess_type='ft', stim_params=None, resp_type='spikes'):
+    # params
+    DBNOISE = 80.0  
+    stim_sample_rate = 1000.0
+    resp_sample_rate = 1000.0
+    
+    # now we have all the spike times aligned to the stimulus onset for all stimuli
+    # now we group them by stimulus and preprocess them
+    srData = {}
+    datasets = []
+    max_stim_amp = 0.0
+    max_resp_len = -1     # Stimulus-response length is number of points
+    n_stim_channels = -1
+    for stim_name, stim_df in all_trials.groupby('stimuli_name'):
+        ds = {}
+        # preprocess the stimuli by loading the wav and generating the tfrep
+        wav_file_name = stim_name #raw_stim_files[k]
+        stim_fs, stim_data = stim_lookup(stim_name)
+        stim_params['fband'] = 120
+        stim_params['nstd'] = 6
+        stim_params['high_freq'] = 8000
+        stim_params['low_freq'] = 250
+        stim_params['log'] = 1
+        stim_params['stim_rate'] = stim_sample_rate
+        tfrep = timefreq_raw(stim_data,stim_fs, preprocess_type, stim_params)
+        stim = {
+            'type': 'tfrep',
+            'rawFile': stim_name,
+            'tfrep': tfrep,
+            'rawSampleRate': tfrep['params']['rawSampleRate'],
+            'sampleRate': stim_sample_rate,
+            'stimLength': tfrep['spec'].shape[1] / stim_sample_rate,
+            'nStimChannels' : tfrep['f'].shape[0],
+            'maxStimAmp': np.max(tfrep["spec"])
+        }
+        ds['stim'] = stim
+
+        if (n_stim_channels == -1 ):
+            n_stim_channels = stim['nStimChannels']
+        else:
+            if (n_stim_channels != stim['nStimChannels']):
+                print('Error: number of spatial (frequency) channels does not match across stimuli')
+
+        max_stim_amp = np.max((max_stim_amp, stim['maxStimAmp']))
+
+        # preprocess the response by loading the individual responses and calculating the psth
+        if resp_type == 'spikes':
+            # lets get the spike times for this stimulus
+            # get trial spike times
+            trial_starts = stim_df.start_time.values
+            trial_stops = stim_df.stop_time.values
+            spike_idx_start = np.searchsorted(unit_spike_times, trial_starts)
+            spike_idx_stop = np.searchsorted(unit_spike_times, trial_stops)
+            spike_times = [unit_spike_times[spike_idx_start[i]:spike_idx_stop[i]] - trial_starts[i] for i in range(len(trial_starts))]
+            stim_len_samples = int(np.round(stim['stimLength']*1000))
+            bin_size = 1
+            nbins = int(stim_len_samples // bin_size)
+            # psth_idx, counts = np.unique(np.round(np.concatenate(spike_times) * 1000 / bin_size).astype(int), return_counts=True)
+            # psth = np.zeros(nbins)
+            # psth[psth_idx[psth_idx < nbins]] = counts[psth_idx < nbins]
+
+            weights = np.zeros(nbins)
+            trial_durations_samples = ((stim_df.stop_time.values - stim_df.start_time.values) * stim_sample_rate)
+            weights = (trial_durations_samples >= np.arange(nbins)[:, None]).sum(axis=1)
+            psth_idx, counts = np.unique(np.round(np.concatenate(spike_times) * 1000 / bin_size).astype(int), return_counts=True)
+            psth = np.zeros(nbins)
+            psth[psth_idx[psth_idx < nbins]] = counts[psth_idx < nbins]
+            psth[weights > 0] /= weights[weights > 0]
+            
+            resp = {
+                'type': 'psth',
+                'sampleRate': resp_sample_rate,
+                'rawSpikeTimes': spike_times,
+                'rawSpikeIndicies': [(st * 1000 / bin_size).astype(int) for st in spike_times],
+                'trialDurations': trial_durations_samples,
+                'psth': psth,
+                'weights': weights
+            }
+            ds['resp'] = resp
+        elif resp_type == 'lfp':
+            # in this case unit_spike_times is None
+            # LFP is in the trials_df
+            # we take the average LFP for this stim
+            bin_size = 1
+            stim_len_samples = int(np.round(stim['stimLength']*1000))
+            nbins = int(stim_len_samples // bin_size)
+            weights = np.zeros(nbins)
+            trial_durations_samples = ((stim_df.stop_time.values - stim_df.start_time.values) * 1000).astype(int)
+            weights = (trial_durations_samples >= np.arange(nbins)[:, None]).sum(axis=1)
+            lfps = []
+            for ix, trial in stim_df.iterrows():
+                # we want to have nbins samples
+                lfp_vec = np.zeros(nbins)
+                lfp_ind = 2
+                len_trial_data = trial.timeseries[lfp_ind].data.shape[0]
+                if len_trial_data < nbins:
+                    lfp_vec[:len_trial_data] = np.mean(trial.timeseries[lfp_ind].data,axis=1)
+                else:
+                    lfp_vec = np.mean(trial.timeseries[lfp_ind].data[:nbins],axis=1)
+                lfps.append(lfp_vec)
+            lfps = np.array(lfps)
+            lfp_sums = lfps.sum(axis=0)
+            lfp_avg_w = np.zeros(nbins)
+            lfp_avg_w[weights > 0] = lfp_sums[weights>0] / weights[weights > 0]
+            # nwo get variance for each bin
+            # stdev calc is sqrt((sum(x^2) - sum(x)^2/n) / (n-1))
+            #lfp_stdev = np.zeros(nbins)
+            #lfp_stdev[weights > 0] = np.sqrt((np.sum(lfps**2,axis=0)[weights>0] - lfp_sums[weights>0]**2 / weights[weights > 0]) / (weights[weights > 0] - 1))
+            resp = {
+                'type': 'psth',
+                'sampleRate': resp_sample_rate,
+                'rawSpikeTimes': None,
+                'rawSpikeIndicies': None,
+                'trialDurations': trial_durations_samples,
+                'psth': lfp_avg_w,
+                'weights': weights
+            }
+            ds['resp'] = resp
+
+        max_resp_len = np.max((max_resp_len, len(resp['psth'])))
+        datasets.append(ds)
+    # end loop over stimuli
+
+    # Threshold spectrogram - this should probably be elsewhere or at least consistent with log
+    for k in range(len(datasets)):
+        spec = datasets[k]['stim']['tfrep']['spec']
+        spec = spec - max_stim_amp + DBNOISE
+        spec[spec<0] = 0.0
+        datasets[k]['stim']['tfrep']['spec'] = spec
+
+    
+    
+    # set dataset-wide values
+    srData = {
+        'stimSampleRate': stim_sample_rate,
+        'respSampleRate': resp_sample_rate,
+        'nStimChannels': n_stim_channels,
+        'datasets': datasets
+    }
+
+    # return srData
+    # compute averages
+    stim_avg, resp_avg, tv_resp_avg = compute_srdata_means(srData, max_resp_len)
+    srData['stimAvg'] = stim_avg
+    srData['respAvg'] = resp_avg
+    srData['tvRespAvg'] = tv_resp_avg
+    srData['type'] = preprocess_type
+
+    return srData
+
+def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft', stim_params=None, stim_loader=None, pb_fix=None, ignore_intervals=False):
+    with nwb.NWBHDF5IO(nwb_file, 'r') as io:
+        # params
+        DBNOISE = 80.0  
+        stim_sample_rate = 1000.0
+        resp_sample_rate = 1000.0
+
+        nwbfile = io.read()
+        
+        # get intervals and spike times from database
+        all_trials = nwbfile.intervals[intervals_name].to_dataframe()
+        unit_spike_times = nwbfile.units[unit_id].spike_times.values[0]
+        print(nwbfile.units[unit_id])
+        # get unit valid intervals
+        all_valid_intervals = nwbfile.intervals['unit_intervals'].to_dataframe()
+        unit_valid_intervals = all_valid_intervals[all_valid_intervals['unit_id'] == unit_id]
+
+        # remove trials that are not in valid intervals
+        valid_trials = all_trials.apply(lambda x: any((unit_valid_intervals.start_time < x.start_time) & (unit_valid_intervals.stop_time > x.stop_time)), axis=1)
+        all_trials = all_trials[valid_trials]
+
+        # # if 'response' in all_trials.columns:
+        # #     all_trials = all_trials[all_trials['response'] == False]
+
+        # now we have all the spike times aligned to the stimulus onset for all stimuli
+        # now we group them by stimulus and preprocess them
+        srData = {}
+        datasets = []
+        max_stim_amp = 0.0
+        max_resp_len = -1     # Stimulus-response length is number of points
+        n_stim_channels = -1
+        for stim_name, stim_df in all_trials.groupby('stimuli_name'):
+            ds = {}
+            # preprocess the stimuli by loading the wav and generating the tfrep
+            wav_file_name = stim_name #raw_stim_files[k]
+            stim_data = nwbfile.stimulus[stim_name].data[:]
+            stim_fs = nwbfile.stimulus[stim_name].rate
+            stim_params['fband'] = 120
+            stim_params['nstd'] = 6
+            stim_params['high_freq'] = 8000
+            stim_params['low_freq'] = 250
+            stim_params['log'] = 1
+            stim_params['stim_rate'] = stim_sample_rate
+            tfrep = timefreq_raw(stim_data,stim_fs, preprocess_type, stim_params)
+            stim = {
+                'type': 'tfrep',
+                'rawFile': stim_name,
+                'tfrep': tfrep,
+                'rawSampleRate': tfrep['params']['rawSampleRate'],
+                'sampleRate': stim_sample_rate,
+                'stimLength': tfrep['spec'].shape[1] / stim_sample_rate,
+                'nStimChannels' : tfrep['f'].shape[0],
+                'maxStimAmp': np.max(tfrep["spec"])
+            }
+            ds['stim'] = stim
+
+            if (n_stim_channels == -1 ):
+                n_stim_channels = stim['nStimChannels']
+            else:
+                if (n_stim_channels != stim['nStimChannels']):
+                    print('Error: number of spatial (frequency) channels does not match across stimuli')
+
+            max_stim_amp = np.max((max_stim_amp, stim['maxStimAmp']))
+
+            # preprocess the response by loading the individual responses and calculating the psth
+            
+            # lets get the spike times for this stimulus
+            # get trial spike times
+            trial_starts = stim_df.start_time.values
+            trial_stops = stim_df.stop_time.values
+            spike_idx_start = np.searchsorted(unit_spike_times, trial_starts)
+            spike_idx_stop = np.searchsorted(unit_spike_times, trial_stops)
+            spike_times = [unit_spike_times[spike_idx_start[i]:spike_idx_stop[i]] - trial_starts[i] for i in range(len(trial_starts))]
+            stim_len_samples = int(np.round(stim['stimLength']*1000))
+            bin_size = 1
+            nbins = int(stim_len_samples // bin_size)
+            # psth_idx, counts = np.unique(np.round(np.concatenate(spike_times) * 1000 / bin_size).astype(int), return_counts=True)
+            # psth = np.zeros(nbins)
+            # psth[psth_idx[psth_idx < nbins]] = counts[psth_idx < nbins]
+
+            weights = np.zeros(nbins)
+            trial_durations_samples = ((stim_df.stop_time.values - stim_df.start_time.values) * stim_sample_rate)
+            weights = (trial_durations_samples >= np.arange(nbins)[:, None]).sum(axis=1)
+            psth_idx, counts = np.unique(np.round(np.concatenate(spike_times) * 1000 / bin_size).astype(int), return_counts=True)
+            psth = np.zeros(nbins)
+            psth[psth_idx[psth_idx < nbins]] = counts[psth_idx < nbins]
+            psth[weights > 0] /= weights[weights > 0]
+            
+            resp = {
+                'type': 'psth',
+                'sampleRate': resp_sample_rate,
+                'rawSpikeTimes': spike_times,
+                'rawSpikeIndicies': [(st * 1000 / bin_size).astype(int) for st in spike_times],
+                'trialDurations': trial_durations_samples,
+                'psth': psth,
+                'weights': weights
+            }
+            ds['resp'] = resp
+
+            max_resp_len = np.max((max_resp_len, len(resp['psth'])))
+            datasets.append(ds)
+        # end loop over stimuli
+
+        # Threshold spectrogram - this should probably be elsewhere or at least consistent with log
+        for k in range(len(datasets)):
+            spec = datasets[k]['stim']['tfrep']['spec']
+            spec = spec - max_stim_amp + DBNOISE
+            spec[spec<0] = 0.0
+            datasets[k]['stim']['tfrep']['spec'] = spec
+
+        
+        
+        # set dataset-wide values
+        srData = {
+            'stimSampleRate': stim_sample_rate,
+            'respSampleRate': resp_sample_rate,
+            'nStimChannels': n_stim_channels,
+            'datasets': datasets
+        }
+
+        # return srData
+        # compute averages
+        stim_avg, resp_avg, tv_resp_avg = compute_srdata_means(srData, max_resp_len)
+        srData['stimAvg'] = stim_avg
+        srData['respAvg'] = resp_avg
+        srData['tvRespAvg'] = tv_resp_avg
+        srData['type'] = preprocess_type
+
+        return srData
+
+
+def calculate_EV(srData, nPoints=200, mult_values=False):
+    # iterate through each pair
+    pairCount = len(srData['datasets'])
+    all_psth_half1 = []
+    all_psth_half2 = []
+    all_weights = []
+    for iSet in range(pairCount):
+        pair = srData['datasets'][iSet]
+        spike_inds = pair['resp']['rawSpikeIndicies']
+        nT = pair['resp']['psth'].size
+        trial_durations = pair['resp']['trialDurations']
+        weights = pair['resp']['weights']
+        # lets split the trials into two halves
+        stim_df1 = spike_inds[:len(spike_inds):2]
+        durations_1 = trial_durations[0:len(trial_durations):2]
+        stim_df2 = spike_inds[1:len(spike_inds):2]
+        durations_2 = trial_durations[1:len(trial_durations):2]
+        # get the psth for each half
+        psth_idx_1, counts_1 = np.unique(np.concatenate(stim_df1), return_counts=True)
+        psth_idx_2, counts_2 = np.unique(np.concatenate(stim_df2), return_counts=True)
+        psth1 = np.zeros(nT)
+        psth2 = np.zeros(nT)
+        psth1[psth_idx_1[psth_idx_1<nT]] = counts_1[psth_idx_1<nT]
+        psth2[psth_idx_2[psth_idx_2<nT]] = counts_2[psth_idx_2<nT]
+        # get the weights for each half
+        weights1 = np.zeros(nT)
+        weights2 = np.zeros(nT)
+        weights1 = (durations_1 >= np.arange(nT)[:,None]).sum(axis=1)
+        weights2 = (durations_2 >= np.arange(nT)[:,None]).sum(axis=1)
+        psth1[weights1 > 0] /= weights1[weights1 > 0]
+        psth2[weights2 > 0] /= weights2[weights2 > 0]
+        # append the psth and weights
+        all_psth_half1.append(psth1)
+        all_psth_half2.append(psth2)
+        assert(np.all(weights == weights1 + weights2))
+        all_weights.append(weights)
+    all_psth_half1 = np.concatenate(all_psth_half1)
+    all_psth_half2 = np.concatenate(all_psth_half2)
+    all_weights = np.concatenate(all_weights)
+    wHann = windows.hann(21, sym=True)   # The 21 ms (number of points) hanning window used to smooth the PSTH
+    wHann = wHann/sum(wHann)
+    psth_half1 = np.convolve(all_psth_half1, wHann, mode='same')
+    psth_half2 = np.convolve(all_psth_half2, wHann, mode='same')
+    r12 = weighted_corr(psth_half1, psth_half2, all_weights)
+    SNRHalf = 1/(r12*r12)-1
+    SNRAll = SNRHalf*2
+    R2Ceil = 1/(1+SNRAll)   # This is the ceiling value of R2 
+
+    print('R2Ceil = %.3f'%R2Ceil)
+    return R2Ceil
+
+def psth_nwb(stim_df, unit_spike_times, stim_dur):
+    trial_starts = stim_df.start_time.values
+    trial_stops = stim_df.stop_time.values
+    spike_idx_start = np.searchsorted(unit_spike_times, trial_starts)
+    spike_idx_stop = np.searchsorted(unit_spike_times, trial_stops)
+    spike_times = [unit_spike_times[spike_idx_start[i]:spike_idx_stop[i]] - trial_starts[i] for i in range(len(trial_starts))]
+
+    stim_len_samples = int(np.round(stim_dur*1000))
+    bin_size = 1
+
+    nbins = int(stim_len_samples // bin_size)
+    weights = np.zeros(nbins)
+    trial_durations_samples = ((stim_df.stop_time.values - stim_df.start_time.values) * 1000).astype(int)
+    weights = (trial_durations_samples >= np.arange(nbins)[:, None]).sum(axis=1)
+    psth_idx, counts = np.unique(np.round(np.concatenate(spike_times) * 1000 / bin_size).astype(int), return_counts=True)
+    psth = np.zeros(nbins)
+    psth[psth_idx[psth_idx < nbins]] = counts[psth_idx < nbins]
+    psth[weights > 0] /= weights[weights > 0]
+    return psth, weights  
+
+
+def calculate_EV_nwb(nwb_file, unit_id, intervals_name, max_dur = None):
+    # can either pass a string or an NWBFile object
+    if isinstance(nwb_file, str):
+        nwb_io = nwb.NWBHDF5IO(nwb_file, 'r')
+        nwbfile = nwb_io.read()
+    else:
+        nwbfile = nwb_file
+
+    # get intervals and spike times from database
+    all_trials = nwbfile.intervals[intervals_name].to_dataframe()
+    unit_spike_times = nwbfile.units[unit_id].spike_times.values[0]
+    # get unit valid intervals
+    all_valid_intervals = nwbfile.intervals['unit_intervals'].to_dataframe()
+    unit_valid_intervals = all_valid_intervals[all_valid_intervals['unit_id'] == unit_id]
+
+    # remove trials that are not in valid intervals
+    valid_trials = all_trials.apply(lambda x: any((unit_valid_intervals.start_time < x.start_time) & (unit_valid_intervals.stop_time > x.stop_time)), axis=1)
+    all_trials = all_trials[valid_trials]
+    if len(all_trials) == 0:
+        print('No valid trials found for unit %s' % unit_id)
+        return None
+    if max_dur is not None:
+        all_trials['stop_time'] = np.minimum(all_trials['stop_time'], all_trials['start_time'] + max_dur)
+
+    psth_half1 = []
+    psth_half2 = []
+    weights_1 = []
+    weights_2 = []
+    for stim_name, stim_df in all_trials.groupby('stimuli_name'):
+        if len(stim_df) < 2:
+            continue
+        # lets split the trials into two halves
+        stim = nwbfile.stimulus[stim_name]
+        stim_sample_rate = stim.rate
+        stim_len = stim.data.shape[0] / stim_sample_rate
+        stim_dur = stim_len
+
+        stim_df1 = stim_df.iloc[:len(stim_df):2]
+        stim_df2 = stim_df.iloc[1:len(stim_df):2]
+        psth1, weights1 = psth_nwb(stim_df1, unit_spike_times, stim_dur)
+        psth2, weights2 = psth_nwb(stim_df2, unit_spike_times, stim_dur)
+        psth_half1.append(psth1)
+        psth_half2.append(psth2)
+        weights_1.append(weights1)
+        weights_2.append(weights2)
+    psth_half1 = np.concatenate(psth_half1)
+    psth_half2 = np.concatenate(psth_half2)
+    weights_1 = np.concatenate(weights_1)
+    weights_2 = np.concatenate(weights_2)
+    wHann = windows.hann(21, sym=True)   # The 21 ms (number of points) hanning window used to smooth the PSTH
+    wHann = wHann/sum(wHann)
+    psth_half1 = np.convolve(psth_half1, wHann, mode='same')
+    psth_half2 = np.convolve(psth_half2, wHann, mode='same')
+    r12 = weighted_corr(psth_half1, psth_half2, weights_1 + weights_2)
+    SNRHalf = 1/(r12*r12)-1
+    SNRAll = SNRHalf*2
+    R2Ceil = 1/(1+SNRAll)   # This is the ceiling value of R2 
+
+    print('R2Ceil = %.3f'%R2Ceil)
+    return R2Ceil
 
 def preprocess_sound(raw_stim_files, raw_resp_files, preprocess_type='ft', stim_params=None,
                      output_dir=None, stim_output_pattern='preprocessed_stim_%d',
@@ -53,7 +549,7 @@ def preprocess_sound(raw_stim_files, raw_resp_files, preprocess_type='ft', stim_
             ds['stim'] = stim
         else:
             wav_file_name = raw_stim_files[k]
-            stim_params['fband'] = 125
+            stim_params['fband'] = 120
             stim_params['nstd'] = 6
             stim_params['high_freq'] = 8000
             stim_params['low_freq'] = 250
@@ -140,14 +636,13 @@ def read_spikes_from_file(file_name):
     
     return spike_trials
 
-
-
-def preprocess_response(spikeTrials, stimLength, sampleRate):
+def preprocess_response(spikeTrials, stimLength, sampleRate, multiplier=1e-3):
+    # multiplier should convert spikeTrials units to seconds
     spikeIndicies = []
     for trials in spikeTrials:
         # turn spike times (ms) into indexes at response sample rate
         
-        stimes = np.round(trials*1e-3 * sampleRate).astype(int) - 1
+        stimes = np.round(trials*multiplier * sampleRate).astype(int) - 1
         # Choose within stimulus
         stimes = stimes[stimes >= 0]
         stimes = stimes[stimes < np.round(stimLength*sampleRate)]
@@ -159,6 +654,7 @@ def preprocess_response(spikeTrials, stimLength, sampleRate):
         'sampleRate': sampleRate,
         'rawSpikeTimes': spikeTrials,
         'rawSpikeIndicies': spikeIndicies,
+        'weights': np.ones(len(psth)),
         'psth': psth
     }
     return resp
@@ -248,13 +744,15 @@ def compute_srdata_means(srData, maxRespLen):
 
 def split_psth(spikeTrialsInd, stimLengthMs):
 
-    halfSize = round(len(spikeTrialsInd)/2)
+    halfSize = int(len(spikeTrialsInd)/2)
     spikeTrials1 = [None]*halfSize
     spikeTrials2 = [None]*halfSize
 
 
     for j, trial in enumerate(spikeTrialsInd):
         indx = int((j + 1) // 2)
+        if indx - 1 >= halfSize:
+            break
         if j%2 == 0:
             spikeTrials1[indx-1] = trial
         else:

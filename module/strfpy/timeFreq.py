@@ -2,12 +2,8 @@ import numpy as np
 import scipy.io.wavfile as wav
 import soundsig.timefreq as ST
 
-
-def timefreq(wavFileName, typeName, params=None):
+def timefreq_raw(inputData, sampleRate, typeName, params=None):
     tfrep = make_tfrep(typeName, params)
-    
-    # read .wav file
-    sampleRate, inputData = wav.read(wavFileName)
     depth = inputData.dtype.itemsize * 8
     tfrep['params']['rawSampleRate'] = sampleRate
     
@@ -45,6 +41,12 @@ def timefreq(wavFileName, typeName, params=None):
         pass
 
     return tfrep
+
+def timefreq(wavFileName, typeName, params=None):
+    # read .wav file
+    sampleRate, inputData = wav.read(wavFileName)
+    return timefreq_raw(inputData, sampleRate, typeName, params=params)
+    
     
 
 def make_tfrep(typeName, params=None):
