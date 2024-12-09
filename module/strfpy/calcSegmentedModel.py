@@ -459,7 +459,7 @@ def fit_seg_model(srData, nLaguerre, nPoints, event_types, feature, pair_train_s
         laguerre_args[iEventType,:] = popt[:3]
 
 
-    # 4. now remove the average response to onsets and offsets
+    # 4. now fit the response to onsets and offsets using the features
     print("Removing average response to onsets and offsets")
     Y_avg_removed = None
     Y_weights = None
