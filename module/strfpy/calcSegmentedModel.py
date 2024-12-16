@@ -108,14 +108,17 @@ def arbitrary_kernel(pair, event_name="onoff_feature", nPoints=200, mult_values=
     """
     nT = pair["resp"]["psth"].size
     feature = pair["events"][event_name]
+    num_features = feature.shape[1]
     values = pair["events"]["%s_values" % event_name]
-    X = np.zeros((nPoints * 2, nT))
+    X = np.zeros((nPoints * num_features, nT))
     if mult_values:
-        X[:nPoints, pair["events"]["index"]] = feature[:, 0] * values
-        X[nPoints:, pair["events"]["index"]] = feature[:, 1] * values
+        for i in range(num_features):
+            X[i * nPoints : (i + 1) * nPoints, pair["events"]["index"]] = (
+                feature[:, i] * values
+            )
     else:
-        X[:nPoints, pair["events"]["index"]] = feature[:, 0]
-        X[nPoints:, pair["events"]["index"]] = feature[:, 1]
+        for i in range(num_features):
+            X[i * nPoints : (i + 1) * nPoints, pair["events"]["index"]] = feature[:, i]
     kern_mat = np.vstack([np.eye(nPoints), np.eye(nPoints)])
     X = fftconvolve(X, kern_mat, axes=1, mode="full")[:, :nT]
     return X
