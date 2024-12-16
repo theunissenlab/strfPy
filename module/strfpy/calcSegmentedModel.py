@@ -106,19 +106,34 @@ def arbitrary_kernel(pair, event_name="onoff_feature", nPoints=200, mult_values=
     Returns:
     np.ndarray: A 2D array representing the kernel matrix convolved with the event data.
     """
-    nT = pair["resp"]["psth"].size
+    if "psth" in pair["resp"]:
+        nT = pair["resp"]["psth"].size
+    else:
+        nT = pair["resp"]["data"].size
     feature = pair["events"][event_name]
-    num_features = feature.shape[1]
-    values = pair["events"]["%s_values" % event_name]
+    try:
+        num_features = feature.shape[1]
+    except IndexError:
+        num_features = 1
     X = np.zeros((nPoints * num_features, nT))
     if mult_values:
-        for i in range(num_features):
-            X[i * nPoints : (i + 1) * nPoints, pair["events"]["index"]] = (
-                feature[:, i] * values
-            )
+        values = pair["events"]["%s_values" % event_name]
+        if num_features > 1:
+            for i in range(num_features):
+                X[i * nPoints : (i + 1) * nPoints, pair["events"]["index"]] = (
+                    feature[:, i] * values
+                )
+        else:
+            X[:nPoints, pair["events"]["index"]] = feature * values
     else:
-        for i in range(num_features):
-            X[i * nPoints : (i + 1) * nPoints, pair["events"]["index"]] = feature[:, i]
+        if num_features > 1:
+            for i in range(num_features):
+                X[i * nPoints : (i + 1) * nPoints, pair["events"]["index"]] = feature[
+                    :, i
+                ]
+        else:
+            X[:nPoints, pair["events"]["index"]] = feature
+    print("X.shape: ", X.shape)
     kern_mat = np.vstack([np.eye(nPoints), np.eye(nPoints)])
     X = fftconvolve(X, kern_mat, axes=1, mode="full")[:, :nT]
     return X
