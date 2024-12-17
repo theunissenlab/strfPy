@@ -111,30 +111,24 @@ def arbitrary_kernel(pair, event_name="onoff_feature", nPoints=200, mult_values=
     else:
         nT = pair["resp"]["data"].size
     feature = pair["events"][event_name]
-    try:
-        num_features = feature.shape[1]
-    except IndexError:
-        num_features = 1
+
+    # handle the case of only one feature, just add a dimension so the new dim is <nT, 1>
+    if feature.ndim == 1:
+        feature = feature[:, np.newaxis]
+
+    num_features = feature.shape[1]
     X = np.zeros((nPoints * num_features, nT))
     if mult_values:
         values = pair["events"]["%s_values" % event_name]
-        if num_features > 1:
-            for i in range(num_features):
-                X[i * nPoints : (i + 1) * nPoints, pair["events"]["index"]] = (
-                    feature[:, i] * values
-                )
-        else:
-            X[:nPoints, pair["events"]["index"]] = feature * values
     else:
-        if num_features > 1:
-            for i in range(num_features):
-                X[i * nPoints : (i + 1) * nPoints, pair["events"]["index"]] = feature[
-                    :, i
-                ]
-        else:
-            X[:nPoints, pair["events"]["index"]] = feature
-    print("X.shape: ", X.shape)
-    kern_mat = np.vstack([np.eye(nPoints), np.eye(nPoints)])
+        values = np.ones(nT)
+    for i in range(num_features):
+        X[i * nPoints : (i + 1) * nPoints, pair["events"]["index"]] = (
+            feature[:, i] * values
+        )
+    
+    # now stack the kern_mat to 
+    kern_mat = np.vstack([np.eye(nPoints)]*num_features)
     X = fftconvolve(X, kern_mat, axes=1, mode="full")[:, :nT]
     return X
 
