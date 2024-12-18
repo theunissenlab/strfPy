@@ -20,13 +20,11 @@ import seaborn as sns
 from functools import partial
 
 # Depednecies from Theunissen Lab
-# sys.path.append("/Users/frederictheunissen/Code/soundsig/")
 from soundsig.sound import BioSound
 from soundsig.sound import spec_colormap
 from soundsig.sound import mps
 
 # strfpy
-sys.path.append("/Users/frederictheunissen/Code/strfPy/module/")
 from .makePSTH import SpikeResponse
 from . import findDatasets, preprocSound, strfSetup, trnDirectFit, plotTfrep
 
@@ -121,14 +119,14 @@ def arbitrary_kernel(pair, event_name="onoff_feature", nPoints=200, mult_values=
     if mult_values:
         values = pair["events"]["%s_values" % event_name]
     else:
-        values = np.ones(nT)
+        values = np.ones(feature.shape[0])
     for i in range(num_features):
         X[i * nPoints : (i + 1) * nPoints, pair["events"]["index"]] = (
             feature[:, i] * values
         )
-    
-    # now stack the kern_mat to 
-    kern_mat = np.vstack([np.eye(nPoints)]*num_features)
+
+    # now stack the kern_mat to
+    kern_mat = np.vstack([np.eye(nPoints)] * num_features)
     X = fftconvolve(X, kern_mat, axes=1, mode="full")[:, :nT]
     return X
 
