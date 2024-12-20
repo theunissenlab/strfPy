@@ -20,13 +20,11 @@ import seaborn as sns
 from functools import partial
 
 # Depednecies from Theunissen Lab
-# sys.path.append("/Users/frederictheunissen/Code/soundsig/")
 from soundsig.sound import BioSound
 from soundsig.sound import spec_colormap
 from soundsig.sound import mps
 
 # strfpy
-sys.path.append("/Users/frederictheunissen/Code/strfPy/module/")
 from .makePSTH import SpikeResponse
 from . import findDatasets, preprocSound, strfSetup, trnDirectFit, plotTfrep
 
@@ -92,7 +90,9 @@ def laguerre(xt, amp, tau, alpha, xorder):
     )
 
 
-def arbitrary_kernel(pair, event_name="onoff_feature", nPoints=200, mult_values=False):
+def arbitrary_kernel(
+    pair, nPoints=200, event_key="onoff_feature", resp_key="psth", mult_values=False
+):
     """
     Generate a kernel matrix for a given event in the pair data.
 
@@ -106,11 +106,8 @@ def arbitrary_kernel(pair, event_name="onoff_feature", nPoints=200, mult_values=
     Returns:
     np.ndarray: A 2D array representing the kernel matrix convolved with the event data.
     """
-    if "psth" in pair["resp"]:
-        nT = pair["resp"]["psth"].size
-    else:
-        nT = pair["resp"]["data"].size
-    feature = pair["events"][event_name]
+    nT = pair["resp"][resp_key].size
+    feature = pair["events"][event_key]
 
     # handle the case of only one feature, just add a dimension so the new dim is <nT, 1>
     if feature.ndim == 1:
@@ -119,16 +116,16 @@ def arbitrary_kernel(pair, event_name="onoff_feature", nPoints=200, mult_values=
     num_features = feature.shape[1]
     X = np.zeros((nPoints * num_features, nT))
     if mult_values:
-        values = pair["events"]["%s_values" % event_name]
+        values = pair["events"]["%s_values" % event_key]
     else:
-        values = np.ones(nT)
+        values = np.ones(feature.shape[0])
     for i in range(num_features):
         X[i * nPoints : (i + 1) * nPoints, pair["events"]["index"]] = (
             feature[:, i] * values
         )
-    
-    # now stack the kern_mat to 
-    kern_mat = np.vstack([np.eye(nPoints)]*num_features)
+
+    # now stack the kern_mat to
+    kern_mat = np.vstack([np.eye(nPoints)] * num_features)
     X = fftconvolve(X, kern_mat, axes=1, mode="full")[:, :nT]
     return X
 
