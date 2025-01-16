@@ -120,9 +120,8 @@ def arbitrary_kernel(
     else:
         values = np.ones(feature.shape[0])
     for i in range(num_features):
-        X[i * nPoints : (i + 1) * nPoints, pair["events"]["index"]] = (
-            feature[:, i] * values
-        )
+        feat_inds = pair["events"]["index"][feature[:, i] == 1]
+        X[i * nPoints : (i + 1) * nPoints, feat_inds] = values[feature[:, i] == 1]
 
     # now stack the kern_mat to
     kern_mat = np.vstack([np.eye(nPoints)] * num_features)
