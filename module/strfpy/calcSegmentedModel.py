@@ -91,7 +91,12 @@ def laguerre(xt, amp, tau, alpha, xorder):
 
 
 def arbitrary_kernel(
-    pair, nPoints=200, event_key="onoff_feature", resp_key="psth", mult_values=False
+    pair,
+    nPoints=200,
+    event_key="onoff_feature",
+    event_index_key="index",
+    resp_key="psth",
+    mult_values=False,
 ):
     """
     Generate a kernel matrix for a given event in the pair data.
@@ -99,8 +104,9 @@ def arbitrary_kernel(
     Parameters:
     pair (dict): A dictionary containing 'resp' and 'events' keys. 'resp' should have a 'psth' key with the response data.
                  'events' should have keys corresponding to event names and their values.
-    event_name (str, optional): The name of the event to be used. Defaults to 'onoff_feature'.
     nPoints (int, optional): Number of points for the kernel. Defaults to 200.
+    event_key (str, optional): The name of the event to be used. Defaults to 'onoff_feature'.
+    event_index_key (str, optional): The key to access the event indices of events specified. Defaults to 'index'.
     mult_values (bool, optional): If True, multiply the feature values by the event values. Defaults to False.
 
     Returns:
@@ -120,7 +126,7 @@ def arbitrary_kernel(
     else:
         values = np.ones(feature.shape[0])
     for i in range(num_features):
-        feat_inds = pair["events"]["index"][feature[:, i] == 1]
+        feat_inds = pair["events"][event_index_key][feature[:, i] == 1]
         X[i * nPoints : (i + 1) * nPoints, feat_inds] = values[feature[:, i] == 1]
 
     # now stack the kern_mat to
