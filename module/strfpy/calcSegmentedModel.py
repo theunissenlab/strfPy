@@ -126,7 +126,7 @@ def arbitrary_kernel(
     else:
         values = np.ones(feature.shape[0])
     for i in range(num_features):
-        feat_inds = pair["events"][event_index_key][feature[:, i] == 1]
+        feat_inds = pair["events"][event_index_key][feature[:, i] == 1].astype(int)
         X[i * nPoints : (i + 1) * nPoints, feat_inds] = values[feature[:, i] == 1]
 
     # now stack the kern_mat to
@@ -136,15 +136,22 @@ def arbitrary_kernel(
 
 
 def generate_laguerre_features(
-    pair, feature_key, laguerre_args=np.zeros((2, 3)), nLaguerrePoints=300, nLaguerre=5
+    pair,
+    feature_key,
+    event_index_key="index",
+    resp_key="psth",
+    laguerre_args=np.zeros((2, 3)),
+    nLaguerrePoints=300,
+    nLaguerre=5,
 ):
     """
     Generate Laguerre features for a given pair of data.
 
     Parameters:
-    pair (dict): Dictionary containing 'resp' and 'events' keys. 'resp' should have a 'psth' key with response data.
-                    'events' should have 'index' and feature_key keys.
+    pair (dict): Dictionary containing 'resp' and 'events' keys.
     feature_key (str): Key to access the features in the 'events' dictionary.
+    event_index_key (str): Key to access the event indices in the 'events' dictionary. Default is 'index'.
+    resp_key (str): Key to access the response data in the 'resp' dictionary. Default is 'psth'.
     laguerre_args (numpy.ndarray): Numpy array of shape (nEventsTypes, 3) containing Laguerre function parameters
                                     (amplitude, tau, alpha) for each event type. Default is np.zeros((2,3)).
     nLaguerrePoints (int): Number of points for the Laguerre functions. Default is 300.
@@ -156,7 +163,7 @@ def generate_laguerre_features(
     # we will generate X and Y for each pair
     # laguerre_args should be a numpy array of size nEventsTypes x 3
     nEventsTypes = laguerre_args.shape[0]
-    nT = pair["resp"]["psth"].size
+    nT = pair["resp"][resp_key].size
     nFeatures = pair["events"][feature_key].shape[1]
     assert (
         nFeatures % nEventsTypes == 0
@@ -191,10 +198,10 @@ def generate_laguerre_features(
 
     # for each event we will convolve the laguerre function with the feature value
     inds = pair["events"][
-        "index"
+        event_index_key
     ]  # + int(laguerre_dt_s*srData['datasets'][iSet]['resp']['sampleRate'])
     # inds = np.clip(inds, 0, nT-1)
-    X[:, pair["events"]["index"]] = np.hstack(
+    X[:, pair["events"][event_index_key]] = np.hstack(
         [pair["events"][feature_key]] * nLaguerre
     ).T
     # now convolve the laguerre function with the feature value
