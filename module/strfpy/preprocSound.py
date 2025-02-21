@@ -242,6 +242,244 @@ def preprocess_sound_raw(unit_spike_times, stim_lookup, all_trials, preprocess_t
 
     return srData
 
+def balance_trials(trials: pd.DataFrame, 
+                  grouping: list = ['bird_name', 'stimuli_name', 'stim_class'],
+                  abs_min_trials: int = 5,
+                  random_state: int = None) -> pd.DataFrame:
+    """
+    Balance trials by randomly sampling the same number of trials for each group.
+    Preserves original DataFrame indices in the sampled data.
+
+    Parameters:
+    -----------
+    trials : pd.DataFrame
+        DataFrame containing trial information with columns for grouping variables.
+    grouping : list of str
+        List of column names to group trials by.
+        Default is ['bird_name', 'stimuli_name', 'class'].
+    random_state : int, optional
+        Random seed for reproducibility. Default is None.
+
+    Returns:
+    --------
+    pd.DataFrame
+        DataFrame containing the balanced trials with original indices preserved.
+    """
+    # Validate grouping columns exist
+    missing_cols = [col for col in grouping if col not in trials.columns]
+    if missing_cols:
+        raise ValueError(f"Missing columns in DataFrame: {missing_cols}")
+
+    # Set random seed if provided
+    if random_state is not None:
+        np.random.seed(random_state)
+
+    # Find minimum group size
+    n_trials = trials.groupby(grouping).size().min()
+    # ignore groups less than abs_min_trials and dont add them to balanced trials
+    if n_trials < abs_min_trials:
+        n_trials = abs_min_trials
+        all_trials_filt = all_trials_filt.groupby(grouping).filter(lambda x: len(x) > 6)
+        trials = trials.groupby(grouping).filter(lambda x: len(x) > 6)
+
+    # Sample rows while preserving indices
+    balanced_trials = trials.groupby(grouping).apply(
+        lambda x: x.sample(n=n_trials, replace=False)
+    )
+    
+    # Reset only the grouping index, keep the original row indices
+    balanced_trials = balanced_trials.reset_index(level=list(range(len(grouping))), drop=True)
+    
+    return balanced_trials
+
+
+def generate_srData_nwb(nwb, intervals_name, unit_id):
+    # params
+    DBNOISE = 80.0  
+    stim_sample_rate = 1000.0
+    resp_sample_rate = 1000.0
+
+    # get intervals and spike times from database
+    all_trials = nwb.intervals[intervals_name].to_dataframe()
+    unit_spike_times = nwb.units[unit_id].spike_times.values[0]
+
+    # get unit valid intervals
+    all_valid_intervals = nwb.intervals['unit_intervals'].to_dataframe()
+    unit_valid_intervals = all_valid_intervals[all_valid_intervals['unit_id'] == unit_id]
+
+    # remove trials that are not in valid intervals
+    valid_trials = all_trials.apply(lambda x: any((unit_valid_intervals.start_time < x.start_time) & (unit_valid_intervals.stop_time > x.stop_time)), axis=1)
+    all_trials = all_trials[valid_trials]
+
+    # lets balance the trials by stimuli name
+    all_trials = balance_trials(all_trials, ['stimuli_name'])
+    
+
+    # lets get the precomputed spectrograms
+    spectrograms = nwb.processing['stimuli_spectrograms']
+
+
+    # now we have all the spike times aligned to the stimulus onset for all stimuli
+    # now we group them by stimulus and preprocess them
+    srData = {}
+    datasets = []
+    max_stim_amp = 0.0
+    max_resp_len = -1     # Stimulus-response length is number of points
+    n_stim_channels = -1
+    for stim_name, stim_df in all_trials.groupby('stimuli_name'):
+        ds = {}
+        # preprocess the stimuli by loading the wav and generating the tfrep
+        wav_file_name = stim_name #raw_stim_files[k]
+        stim_spec = spectrograms[stim_name].data[:].T # nfreq x ntime
+        stim_t = spectrograms[stim_name].timestamps[:] # ntime
+        stim_fs = 1.0 / (stim_t[1] - stim_t[0]) # sample rate of the spectrogram
+        # lets check that stim_fs is close to stim_sample_rate
+        if np.abs(stim_fs - stim_sample_rate) > 1e-3:
+            print("Warning: stim_fs is not close to stim_sample_rate")
+        stim = {
+            'type': 'tfrep',
+            'rawFile': stim_name,
+            'tfrep': dict({'spec':stim_spec,
+                            'f':np.arange(stim_spec.shape[0])*(8000-250) + 250,}),
+            'sampleRate': stim_sample_rate,
+            'stimLength': stim_t[-1],
+            'nStimChannels' : stim_spec.shape[0],
+            'maxStimAmp': np.max(stim_spec)
+        }
+        ds['stim'] = stim
+
+        if (n_stim_channels == -1 ):
+            n_stim_channels = stim['nStimChannels']
+        else:
+            if (n_stim_channels != stim['nStimChannels']):
+                print('Error: number of spatial (frequency) channels does not match across stimuli')
+
+        max_stim_amp = np.max((max_stim_amp, stim['maxStimAmp']))
+
+        # preprocess the response by loading the individual responses and calculating the psth
+        
+        # lets get the spike times for this stimulus
+        # get trial spike times
+        trial_starts = stim_df.start_time.values
+        trial_stops = stim_df.stop_time.values
+        spike_idx_start = np.searchsorted(unit_spike_times, trial_starts)
+        spike_idx_stop = np.searchsorted(unit_spike_times, trial_stops)
+        spike_times = [unit_spike_times[spike_idx_start[i]:spike_idx_stop[i]] - trial_starts[i] for i in range(len(trial_starts))]
+        stim_len_samples = int(np.round(stim['stimLength']*1000))
+        bin_size = 1
+        nbins = int(stim_len_samples // bin_size)
+        # psth_idx, counts = np.unique(np.round(np.concatenate(spike_times) * 1000 / bin_size).astype(int), return_counts=True)
+        # psth = np.zeros(nbins)
+        # psth[psth_idx[psth_idx < nbins]] = counts[psth_idx < nbins]
+
+        weights = np.zeros(nbins)
+        trial_durations_samples = ((stim_df.stop_time.values - stim_df.start_time.values) * stim_sample_rate)
+        weights = (trial_durations_samples >= np.arange(nbins)[:, None]).sum(axis=1)
+        psth_idx, counts = np.unique(np.round(np.concatenate(spike_times) * 1000 / bin_size).astype(int), return_counts=True)
+        psth = np.zeros(nbins)
+        psth[psth_idx[psth_idx < nbins]] = counts[psth_idx < nbins]
+        psth[weights > 0] /= weights[weights > 0]
+        psth = psth * 1000 / bin_size
+        
+        resp = {
+            'type': 'psth',
+            'sampleRate': resp_sample_rate,
+            'rawSpikeTimes': spike_times,
+            'rawSpikeIndicies': [(st * 1000 / bin_size).astype(int) for st in spike_times],
+            'trialDurations': trial_durations_samples,
+            'psth': psth,
+            'weights': weights
+        }
+        ds['resp'] = resp
+
+        max_resp_len = np.max((max_resp_len, len(resp['psth'])))
+        datasets.append(ds)
+    # end loop over stimuli
+
+    # Threshold spectrogram - this should probably be elsewhere or at least consistent with log
+    for k in range(len(datasets)):
+        spec = datasets[k]['stim']['tfrep']['spec']
+        spec = spec - max_stim_amp + DBNOISE
+        spec[spec<0] = 0.0
+        datasets[k]['stim']['tfrep']['spec'] = spec
+
+    
+    
+    # set dataset-wide values
+    srData = {
+        'stimSampleRate': stim_sample_rate,
+        'respSampleRate': resp_sample_rate,
+        'nStimChannels': n_stim_channels,
+        'datasets': datasets
+    }
+
+    # return srData
+    # compute averages
+    stim_avg, resp_avg, tv_resp_avg = compute_srdata_means(srData, max_resp_len)
+    srData['stimAvg'] = stim_avg
+    srData['respAvg'] = resp_avg
+    srData['tvRespAvg'] = tv_resp_avg
+    srData['type'] = 'ft'
+
+    return srData
+
+
+def calc_psth(spike_times,  psth_dur_s, t_start_s=0, bin_size=1, durations=None, bSmooth=False):
+    """
+    Calculate Peri-Stimulus Time Histogram (PSTH).
+
+    Parameters:
+    spike_times (array-like): Array of spike times in seconds.
+    psth_dur_s (float): Duration of the psth to be calculated in seconds.
+    t_start_s (float, optional): Start time of the PSTH in seconds. Default is 0.
+    bin_size (int, optional): Size of the bins in milliseconds. Default is 1 ms.
+    durations (array-like): Array of trial durations in seconds for weighting bins.
+                             if None, no weighting.
+    bSmooth (bool, optional): If True, the PSTH will be smoothed using a Hanning window. Default is False.
+
+    Returns:
+    tuple: A tuple containing:
+        - bins (numpy.ndarray): Array of bin centers in seconds.
+        - psth (numpy.ndarray): Array of PSTH values (spikes per second).
+    """
+    # spike_times can be a list of arrays or an array
+    if isinstance(spike_times, list):
+        n_trials = len(spike_times)
+        spike_times = np.concatenate(spike_times)
+    else:
+        n_trials = 1
+    assert np.all(np.round(1000*spike_times) >= np.round(1000*t_start_s)), "Spike times must be larger than the start_time."
+    spike_times += t_start_s # offset by t_start_s to align with the start time
+
+    nbins = int(np.round(psth_dur_s*1000) // bin_size)
+    #print(min(spike_times), max(spike_times), psth_dur_s)
+    psth_idx, counts = np.unique(
+        np.round(spike_times * 1000 / bin_size).astype(int), return_counts=True)
+    # counts = counts[psth_idx >= 0]
+    # psth_idx = psth_idx[psth_idx >= 0]
+    
+    psth = np.zeros(nbins)
+    psth[psth_idx[psth_idx < nbins]] = counts[psth_idx < nbins]
+    if durations is None:
+        psth /= n_trials
+    else:
+        if n_trials != len(durations):
+            raise ValueError(
+                "The number of durations must match the number of trials.")
+        weights = np.zeros(nbins)
+        trial_durations_ms = (durations * 1000).astype(int)
+        weights = (trial_durations_ms >= np.arange(
+            nbins)[:, None]*bin_size).sum(axis=1)
+        psth[weights > 0] /= weights[weights > 0]
+    if bSmooth:
+        # The 21 ms (number of points) hanning window used to smooth the PSTH
+        # I think we should shoot for a 20 ms kernel no matter what the bin size is
+        kernel_size = 40 // bin_size + 1
+        wHann = windows.hann(kernel_size, sym=True)
+        wHann = wHann/sum(wHann)
+        psth = np.convolve(psth, wHann, mode='same')
+    return np.arange(nbins)*bin_size/1000 + t_start_s, psth * 1000 / bin_size
+
 def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft', stim_params=None, stim_loader=None, pb_fix=None, ignore_intervals=False):
     with nwb.NWBHDF5IO(nwb_file, 'r') as io:
         # params
@@ -310,8 +548,10 @@ def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft'
             
             # lets get the spike times for this stimulus
             # get trial spike times
+            
             trial_starts = stim_df.start_time.values
             trial_stops = stim_df.stop_time.values
+
             spike_idx_start = np.searchsorted(unit_spike_times, trial_starts)
             spike_idx_stop = np.searchsorted(unit_spike_times, trial_stops)
             spike_times = [unit_spike_times[spike_idx_start[i]:spike_idx_stop[i]] - trial_starts[i] for i in range(len(trial_starts))]
@@ -329,6 +569,7 @@ def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft'
             psth = np.zeros(nbins)
             psth[psth_idx[psth_idx < nbins]] = counts[psth_idx < nbins]
             psth[weights > 0] /= weights[weights > 0]
+            psth = psth * 1000 / bin_size
             
             resp = {
                 'type': 'psth',
