@@ -164,7 +164,10 @@ def generate_laguerre_features(
     # laguerre_args should be a numpy array of size nEventsTypes x 3
     nEventsTypes = laguerre_args.shape[0]
     nT = pair["resp"][resp_key].size
-    nFeatures = pair["events"][feature_key].shape[1]
+    feature = pair["events"][feature_key]
+    if feature.ndim == 1:
+        feature = feature[:, np.newaxis]
+    nFeatures = feature.shape[1]
     assert (
         nFeatures % nEventsTypes == 0
     )  # we expect the number of features to be a multiple of the number of event types
@@ -201,9 +204,7 @@ def generate_laguerre_features(
         event_index_key
     ]  # + int(laguerre_dt_s*srData['datasets'][iSet]['resp']['sampleRate'])
     # inds = np.clip(inds, 0, nT-1)
-    X[:, pair["events"][event_index_key]] = np.hstack(
-        [pair["events"][feature_key]] * nLaguerre
-    ).T
+    X[:, pair["events"][event_index_key]] = np.hstack([feature] * nLaguerre).T
     # now convolve the laguerre function with the feature value
     X = fftconvolve(X, laguerre_mat, axes=1, mode="full")[:, :nT]
     return X
