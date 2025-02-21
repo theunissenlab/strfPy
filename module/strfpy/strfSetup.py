@@ -54,7 +54,7 @@ def srdata2strflab(srData, useRaw=False, preprocOptions={}):
 
     for k in range(pairCount):
         ds = srData['datasets'][k]
-        numTrials = min(numTrials, len(ds['resp']['rawSpikeIndicies']))
+        numTrials = min(numTrials, len(ds['resp']['trialDurations']))
         totalStimLength += ds['stim']['tfrep']['spec'].shape[1]
         totalRespLength += len(ds['resp']['psth'])
 
