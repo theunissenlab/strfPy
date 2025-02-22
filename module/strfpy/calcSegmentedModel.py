@@ -638,7 +638,6 @@ def fit_seg_model(
         laguerre_args[iEventType, :] = popt[:3]
 
     # 4. now fit the response to onsets and offsets using the features
-    print("Removing average response to onsets and offsets")
     Y_avg_removed = None
     Y_weights = None
     X = None
@@ -672,7 +671,7 @@ def fit_seg_model(
             Y_weights = np.hstack([Y_weights, yw])
 
     # 5. now fit the laguerre features to the response residual
-    print("Fit the laguerre features to the response residual")
+    print("Fit the laguerre convolved features to the response")
     SIModel_ridge = RidgeCV()
     SIModel_ridge.fit(X.T, Y_avg_removed, sample_weight=Y_weights)
 
