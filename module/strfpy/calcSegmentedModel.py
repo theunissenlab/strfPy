@@ -115,6 +115,14 @@ def arbitrary_kernel(
     nT = pair["resp"][resp_key].size
     feature = pair["events"][event_key]
 
+    # check if resp and stim are the same samplerate
+    if pair['resp']['sampleRate'] != pair['stim']['sampleRate']:
+        conv_factor = pair['resp']['sampleRate'] / pair['stim']['sampleRate']
+    else:
+        conv_factor = 1
+
+    feature = np.round(feature * conv_factor).astype(int)
+
     # handle the case of only one feature, just add a dimension so the new dim is <nT, 1>
     if feature.ndim == 1:
         feature = feature[:, np.newaxis]
@@ -205,7 +213,7 @@ def generate_laguerre_features(
 # Slated for removal
 def get_simple_prediction_r2(pair, ridge_conv_filter, nPoints, mult_values=False):
     y = pair["resp"]["psth_smooth"]
-    x = arbitrary_kernel(pair, nPoints=nPoints, mult_values=mult_values)
+    x = arbitrary_kernel(pair, nPoints=nPoints, resp_key='psth_smooth', mult_values=mult_values)
     y_pred = ridge_conv_filter.predict(x.T)
     return np.corrcoef(y, y_pred)[0, 1] ** 2
 
@@ -302,7 +310,7 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
     DBNOISE = 50  # Set a baseline for everything below 70 dB from max
 
     wHann = windows.hann(
-        21, sym=True
+        31, sym=True
     )  # The 21 ms (number of points) hanning window used to smooth the PSTH
     wHann = wHann / sum(wHann)
 
@@ -696,7 +704,6 @@ def process_unit(
         event_types,
         feature,
         pair_train_set,
-        mult_values=mult_values,
         pca=pca,
     )
 

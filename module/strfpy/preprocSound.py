@@ -366,7 +366,7 @@ def generate_srData_nwb(nwb, intervals_name, unit_id):
         spike_idx_stop = np.searchsorted(unit_spike_times, trial_stops)
         spike_times = [unit_spike_times[spike_idx_start[i]:spike_idx_stop[i]] - trial_starts[i] for i in range(len(trial_starts))]
         stim_len_samples = int(np.round(stim['stimLength']*1000))
-        bin_size = 1
+        bin_size = int(np.round( 1000 / resp_sample_rate )) # ms
         nbins = int(stim_len_samples // bin_size)
         # psth_idx, counts = np.unique(np.round(np.concatenate(spike_times) * 1000 / bin_size).astype(int), return_counts=True)
         # psth = np.zeros(nbins)
