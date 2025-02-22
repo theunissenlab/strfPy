@@ -241,7 +241,7 @@ def get_prediction_r2(
 
 def gen_y_avg_laguerre(pair, laguerre_args, nPts):
     x = generate_laguerre_features(
-        pair, "onoff_feature", laguerre_args, nLaguerrePoints=nPts, nLaguerre=5
+        pair, feature_key="onoff_feature", resp_key='psth_smooth', laguerre_args=laguerre_args, nLaguerrePoints=nPts, nLaguerre=5
     )
     y = pair["resp"]["psth_smooth"]
     ridge = RidgeCV()
@@ -260,8 +260,9 @@ def generate_prediction(
 ):
     x = generate_laguerre_features(
         pair,
-        "pca_%s" % feature,
-        laguerre_args,
+        feature_key="pca_%s" % feature,
+        resp_key='psth_smooth',
+        laguerre_args=laguerre_args,
         nLaguerrePoints=nPoints,
         nLaguerre=nLaguerre,
     )
@@ -275,8 +276,9 @@ def generate_pred_score(
 ):
     x = generate_laguerre_features(
         pair,
-        "pca_%s" % feature,
-        laguerre_args,
+        feature_key="pca_%s" % feature,
+        resp_key='psth_smooth',
+        laguerre_args=laguerre_args,
         nLaguerrePoints=nPoints,
         nLaguerre=nLaguerre,
     )
@@ -645,8 +647,9 @@ def fit_seg_model(
         pair = srData["datasets"][iSet]
         x = generate_laguerre_features(
             pair,
-            "pca_%s" % feature,
-            laguerre_args,
+            feature_key="pca_%s" % feature,
+            resp_key="psth_smooth",
+            laguerre_args=laguerre_args,
             nLaguerrePoints=nPoints,
             nLaguerre=nLaguerre,
         )
