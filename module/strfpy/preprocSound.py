@@ -5,7 +5,7 @@ from scipy.io import loadmat
 from scipy.signal import convolve, windows
 
 #sys.path.append("/Users/frederictheunissen/Code/crcns-kailin/module")
-from strfpy.timeFreq import timefreq, timefreq_raw
+from module.strfpy.timeFreq import timefreq, timefreq_raw
 import pandas as pd
 import pynwb as nwb
 
@@ -22,7 +22,7 @@ def weighted_corr(x, y, w):
     return weighted_cov(x, y, w) / np.sqrt(weighted_cov(x, x, w) * weighted_cov(y, y, w))
 
 
-def preprocess_sound_raw_nospike(stim_lookup, all_trials, preprocess_type='ft', stim_params=None):
+def preprocess_sound_raw_nospike(stim_lookup, all_trials, preprocess_type='ft', stim_params={}):
     # params
     DBNOISE = 80.0  
     stim_sample_rate = 1000.0
@@ -92,7 +92,7 @@ def preprocess_sound_raw_nospike(stim_lookup, all_trials, preprocess_type='ft', 
 
     return srData
 
-def preprocess_sound_raw(unit_spike_times, stim_lookup, all_trials, preprocess_type='ft', stim_params=None, resp_type='spikes'):
+def preprocess_sound_raw(unit_spike_times, stim_lookup, all_trials, preprocess_type='ft', stim_params={}, resp_type='spikes'):
     # params
     DBNOISE = 80.0  
     stim_sample_rate = 1000.0
@@ -279,7 +279,7 @@ def balance_trials(trials: pd.DataFrame,
     # ignore groups less than abs_min_trials and dont add them to balanced trials
     if n_trials < abs_min_trials:
         n_trials = abs_min_trials
-        all_trials_filt = all_trials_filt.groupby(grouping).filter(lambda x: len(x) > 6)
+        # all_trials_filt = all_trials_filt.groupby(grouping).filter(lambda x: len(x) > 6)
         trials = trials.groupby(grouping).filter(lambda x: len(x) > 6)
 
     # Sample rows while preserving indices
@@ -480,7 +480,7 @@ def calc_psth(spike_times,  psth_dur_s, t_start_s=0, bin_size=1, durations=None,
         psth = np.convolve(psth, wHann, mode='same')
     return np.arange(nbins)*bin_size/1000 + t_start_s, psth * 1000 / bin_size
 
-def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft', stim_params=None, stim_loader=None, pb_fix=None, ignore_intervals=False):
+def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft', stim_params={}, stim_loader=None, pb_fix=None, ignore_intervals=False):
     with nwb.NWBHDF5IO(nwb_file, 'r') as io:
         # params
         DBNOISE = 80.0  
@@ -555,8 +555,8 @@ def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft'
             spike_idx_start = np.searchsorted(unit_spike_times, trial_starts)
             spike_idx_stop = np.searchsorted(unit_spike_times, trial_stops)
             spike_times = [unit_spike_times[spike_idx_start[i]:spike_idx_stop[i]] - trial_starts[i] for i in range(len(trial_starts))]
-            stim_len_samples = int(np.round(stim['stimLength']*1000))
-            bin_size = 1
+            stim_len_samples = int(np.round(stim['stimLength']*1000))  # Stimulus length in ms
+            bin_size = 1000.0/resp_sample_rate
             nbins = int(stim_len_samples // bin_size)
             # psth_idx, counts = np.unique(np.round(np.concatenate(spike_times) * 1000 / bin_size).astype(int), return_counts=True)
             # psth = np.zeros(nbins)
@@ -569,7 +569,7 @@ def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft'
             psth = np.zeros(nbins)
             psth[psth_idx[psth_idx < nbins]] = counts[psth_idx < nbins]
             psth[weights > 0] /= weights[weights > 0]
-            psth = psth * 1000 / bin_size
+            psth = psth * resp_sample_rate / bin_size
             
             resp = {
                 'type': 'psth',

@@ -10,7 +10,7 @@ import matplotlib.animation as animation
 from matplotlib.patches import Rectangle
 from glob import glob
 from scipy.signal import windows, fftconvolve
-from scipy.io import wavfile
+# from scipy.io import wavfile
 from scipy.special import genlaguerre
 from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
@@ -20,7 +20,7 @@ import seaborn as sns
 from functools import partial
 
 # Depednecies from Theunissen Lab
-from soundsig.sound import BioSound
+# from soundsig.sound import BioSound
 from soundsig.sound import spec_colormap
 from soundsig.sound import mps
 
@@ -148,7 +148,7 @@ def generate_laguerre_features(
     feature_key,
     event_index_key="index",
     resp_key="psth",
-    laguerre_args=np.zeros((2, 3)),
+    laguerre_args=np.zeros((2, 2)),
     nLaguerrePoints=300,
     nLaguerre=5,
 ):
@@ -187,9 +187,10 @@ def generate_laguerre_features(
     # laguerre functions for each order
     # the order of the matrix's rows are: Laguerre order 0-nLaguerre for feature 1, Laguerre order 0-nLaguerre for feature 2, ...
     laguerre_mat = np.zeros((nFeatures * nLaguerre, nLaguerrePoints))
+    laguerre_amp = 1.0
     x_t = np.arange(nLaguerrePoints)
     for iEventType in range(nEventsTypes):
-        laguerre_amp, laguerre_tau, laguerre_alpha = laguerre_args[iEventType]
+        laguerre_tau, laguerre_alpha = laguerre_args[iEventType]
         for iLaguerre in range(nLaguerre):
             lag_start_ind = (
                 iLaguerre * nFeaturesPerEventType * nEventsTypes
@@ -214,7 +215,7 @@ def generate_laguerre_features(
     # inds = np.clip(inds, 0, nT-1)
     X[:, pair["events"][event_index_key]] = np.hstack([feature] * nLaguerre).T
     # now convolve the laguerre function with the feature value
-    X = fftconvolve(X, laguerre_mat, axes=1, mode="full")[:, :nT]
+    X = fftconvolve(X, laguerre_mat, axes=1, mode="full")[:, :nT]  # LG1: 20 pcONset, 20 pcOffset, LG1: 20 pcOnset, 20 pcOffset, ...
     return X
 
 
@@ -291,7 +292,7 @@ def generate_pred_score(
 # preproc function
 
 
-def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, tdelta=0):
+def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, tdelta=0, plotFlg = False):
     """
     Preprocesses stimulus-response data by segmenting the stimulus based on its envelope, calculating the spectrogram,
     PSTH (Peri-Stimulus Time Histogram), and MPS (Modulation Power Spectrum).
@@ -311,13 +312,18 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
     # - Calculation of the MPS
 
     # Segmentation based on derivative of the envelope
-    ampThresh = 20.0  # Threshold in dB where 50 is max
+    # ampThresh = 20.0  # Threshold in dB where 50 is max
 
     minSound = 25  # Minimum distance between peaks or troffs
     derivativeThresh = 0.2  # Threshold derivative 0.5 dB per ms.
     # segmentBuffer = 30 # Number of points on each side of segment for response and MPS - time units given by stim sample rate
     # respChunkLen = 150 # Total chunk length (including segment buffer) in number of points
-    DBNOISE = 50  # Set a baseline for everything below 70 dB from max
+    # DBNOISE = 50  # Set a baseline for everything below 50 dB from max - done in preprocSound
+    
+    # Colormap for plotting spectrograms
+    spec_colormap()   # defined in sound.py
+    cmap = plt.get_cmap('SpectroColorMap')
+
 
     wHann = windows.hann(
         31, sym=True
@@ -339,8 +345,11 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
         # fs , soundStim = wavfile.read(waveFile)
         # soundLen = soundStim.size
         spectro = np.copy(srData["datasets"][iSet]["stim"]["tfrep"]["spec"])
-        dBMax = spectro.max()
-        spectro[spectro < dBMax - DBNOISE] = dBMax - DBNOISE
+        
+        # This normalization is done at the srData level so that the relative amplitude of the stims is preserved. 
+        # dBMax = spectro.max()
+        # spectro[spectro < dBMax - DBNOISE] = dBMax - DBNOISE
+
         # set the y ticks to freq
         nFreqs = len(srData["datasets"][iSet]["stim"]["tfrep"]["f"])
 
@@ -395,7 +404,7 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
             spectro,
             ((0, 0), (respChunkLen, respChunkLen)),
             "constant",
-            constant_values=(dBMax - DBNOISE, dBMax - DBNOISE),
+            constant_values=(0, 0),
         )
         # now get the sliding window view
         spect_windows = np.lib.stride_tricks.sliding_window_view(
@@ -470,14 +479,14 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
                 srData["datasets"][iSet]["resp"]["psth"], wHann, mode="same"
             )
 
-        if plot:
+        if plotFlg:
             plt.figure(figsize=(8, 2), dpi=100)
             # plt.plot(ampdev)
 
             # plt.figure()
             plt.subplot(2, 1, 1)
-            plt.imshow(spectro, aspect="auto", cmap=spec_colormap(), origin="lower")
-            plt.axhline(derivativeThresh, color="k")
+            plt.imshow(spectro, aspect="auto", cmap=cmap, origin="lower")
+            
 
             for soundStart in peakInd:
                 soundFinish = np.argwhere(troughInd >= soundStart + minSound)
@@ -499,9 +508,32 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
             xlim = plt.xlim()
             plt.subplot(2, 1, 2)
             plt.plot(ampdev)
+            plt.axhline(derivativeThresh, color="k")
+            plt.axhline(-derivativeThresh, color="k")
+            plt.ylim((derivativeThresh*-3.0, derivativeThresh*3.0))
             plt.xlim(xlim)
 
-    # lets normalize all the mps
+            plt.figure(figsize=(16, 2), dpi=100)
+            nEvents = events["index"].shape[0]
+            nOn = sum(events['onoff_feature'][:,0] == 1 )
+            nOff = sum(events['onoff_feature'][:,0] == 0 )
+            nMax = max((nOn, nOff))
+            iOn = 1
+            iOff = nMax+1
+
+            for iEvent in range(nEvents):
+                if (events['onoff_feature'][iEvent,0] == 1):
+                    plt.subplot(2, nMax, iOn)
+                    iOn += 1
+                else:
+                    plt.subplot(2, nMax, iOff)
+                    iOff += 1
+                
+                plt.imshow(events['spect_windows'][iEvent,:,:], aspect="auto", cmap=cmap, origin="lower")
+                plt.axis('off')
+
+
+    # lets generate zero-mean mps
     all_mps = np.concatenate(
         [
             srData["datasets"][iSet]["events"]["mps_windows"]
@@ -556,7 +588,7 @@ def fit_seg_model(
         pair_train_set = np.arange(pairCount)
 
     # 1. first use PCA to reduce dim of the features'
-    print("Fitting PCA")
+    print("Fitting PCA to Feature")
     if pca is None:
         npcs = 20
         pca = PCA(n_components=npcs)
@@ -617,27 +649,27 @@ def fit_seg_model(
     partial_laguerre = partial(laguerre, xorder=0)
 
     def sum_n_laguerres(xt, *args):
-        amp, tau, alpha, *w = args
+        tau, alpha, *w = args
         nL = len(w)
         out = np.zeros_like(xt, dtype=float)
         for iL in range(nL):
-            out += w[iL] * laguerre(xt, amp, tau, alpha, xorder=iL)  # TODO FIX
+            out += w[iL] * laguerre(xt, 1.0, tau, alpha, xorder=iL) 
         return out
 
-    laguerre_args = np.zeros((nEventTypes, 3))
+    laguerre_args = np.zeros((nEventTypes, 7))
     for iEventType in range(nEventTypes):
         popt, pcov = curve_fit(
             sum_n_laguerres,
             np.arange(nPoints),
-            learned_conv_kernel[iEventType, :],
-            p0=[2, 6, 5, 1, 1, 1, 1, 1],
+            learned_conv_kernel[iEventType, :]-np.mean(learned_conv_kernel[iEventType, :]),
+            p0=[15, 5, 1, 1, 1, 1, 1],
             bounds=(
-                [-np.inf, -np.inf, 0, -np.inf, -np.inf, -np.inf, -np.inf, -np.inf],
-                [np.inf, np.inf, np.inf, np.inf, np.inf, np.inf, np.inf, np.inf],
+                [0, 0, -np.inf, -np.inf, -np.inf, -np.inf, -np.inf],
+                [np.inf, np.inf, np.inf, np.inf, np.inf, np.inf, np.inf],
             ),
             method="trf",
         )
-        laguerre_args[iEventType, :] = popt[:3]
+        laguerre_args[iEventType, :] = popt
 
     # 4. now fit the response to onsets and offsets using the features
     Y_avg_removed = None
@@ -649,7 +681,7 @@ def fit_seg_model(
             pair,
             feature_key="pca_%s" % feature,
             resp_key="psth_smooth",
-            laguerre_args=laguerre_args,
+            laguerre_args=laguerre_args[:,0:2],
             nLaguerrePoints=nPoints,
             nLaguerre=nLaguerre,
         )
@@ -731,7 +763,7 @@ def process_unit(
             srData["datasets"][iSet],
             ridge,
             feature,
-            laguerre_args,
+            laguerre_args[:,0:2],
             ridge_conv_filter,
             nPoints,
             nLaguerre,
@@ -743,7 +775,7 @@ def process_unit(
             srData["datasets"][iSet],
             ridge,
             feature,
-            laguerre_args,
+            laguerre_args[:,0:2],
             ridge_conv_filter,
             nPoints,
             nLaguerre,
