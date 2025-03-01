@@ -263,7 +263,7 @@ def generate_prediction(
         pair,
         feature_key="pca_%s" % feature,
         resp_key='psth_smooth',
-        laguerre_args=laguerre_args,
+        laguerre_args=laguerre_args[:,0:2],
         nLaguerrePoints=nPoints,
         nLaguerre=nLaguerre,
     )
@@ -279,7 +279,7 @@ def generate_pred_score(
         pair,
         feature_key="pca_%s" % feature,
         resp_key='psth_smooth',
-        laguerre_args=laguerre_args,
+        laguerre_args=laguerre_args[:,0:2],
         nLaguerrePoints=nPoints,
         nLaguerre=nLaguerre,
     )
