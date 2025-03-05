@@ -89,6 +89,28 @@ def laguerre(xt, amp, tau, alpha, xorder):
         * genlaguerre(xorder, alpha)(xt / tau)
     )
 
+def dogs(xt, meanVal, ampPos, ampNeg, tPos, tNeg, sdPos, sdNeg):
+    """ 
+    Computes a Difference Of GaussianS or DOGS with a DC offset: meanval. 
+    The amplitudes are specified as positive numbers both for the positive and negative DOGS """
+
+    out = meanVal + ampPos*np.exp(-0.5*(xt-tPos)**2/sdPos**2) - ampNeg*np.exp(-0.5*(xt-tNeg)**2/sdNeg**2)
+    return out
+
+def dDogsDt(xt, meanVal, ampPos, ampNeg, tPos, tNeg, sdPos, sdNeg):
+    """ 
+    Computes the derivative of the Difference Of GaussianS or DOGS.
+     The meanVal argument is not used but it is kept to match dogs """
+                
+    out = -ampPos*((xt-tPos)/(sdPos**2))*np.exp(-0.5*(xt-tPos)**2/sdPos**2) + ampNeg*((xt-tNeg)/(sdNeg**2))*np.exp(-0.5*(xt-tNeg)**2/sdNeg**2)
+    return out
+
+def Gauss(xt, t, sd):
+    return (np.exp(-0.5*(xt-t)**2/sd**2))
+
+def DGauss(xt, t, sd):
+    return ((-(xt-t)/(sd**2))*np.exp(-0.5*(xt-t)**2/sd**2))
+
 
 def arbitrary_kernel(
     pair,
@@ -140,6 +162,78 @@ def arbitrary_kernel(
     # now stack the kern_mat to
     kern_mat = np.vstack([np.eye(nPoints)] * num_features)
     X = fftconvolve(X, kern_mat, axes=1, mode="full")[:, :nT]
+    return X
+
+def generate_dogs_features(
+    pair,
+    feature_key,
+    event_index_key="index",
+    resp_key="psth",
+    dogs_args=np.zeros((2, 7)),
+    nPoints=300
+):
+    """
+    Generate Laguerre features for a given pair of data.
+
+    Parameters:
+    pair (dict): Dictionary containing 'resp' and 'events' keys.
+    feature_key (str): Key to access the features in the 'events' dictionary.
+    event_index_key (str): Key to access the event indices in the 'events' dictionary. Default is 'index'.
+    resp_key (str): Key to access the response data in the 'resp' dictionary. Default is 'psth'.
+    dogs_args (numpy.ndarray): Numpy array of shape (nEventsTypes, 7) containing the DOGS parameters
+                                    (meanVal, ampPos, ampNeg, tPos, tNeg, sdPos, sdNeg) for each event type. Default is np.zeros((2,7)).
+    nPoints (int): Number of points for the DOGS functions. Default is 300.
+
+    Returns:
+    numpy.ndarray: A 2D array of shape (nFeatures*nLaguerre, nT) containing the generated Laguerre features.
+    """
+    # we will generate X and Y for each pair
+    # dogs_args should be a numpy array of size nEventsTypes x 7
+    nEventsTypes = dogs_args.shape[0]
+    nT = pair["resp"][resp_key].size
+    feature = pair["events"][feature_key]
+    if feature.ndim == 1:
+        feature = feature[:, np.newaxis]
+    nFeatures = feature.shape[1]
+    assert (
+        nFeatures % nEventsTypes == 0
+    )  # we expect the number of features to be a multiple of the number of event types
+    nFeaturesPerEventType = nFeatures // nEventsTypes
+    # the features are organized in the following way:
+    # the first nFeatures/nEventTypes features are for the first event type, the second nFeatures/nEventTypes are for the second event type, ...
+    nDOGS = 4
+    X = np.zeros((nFeatures * nDOGS, nT))
+
+    # DOGS functions for each order
+    # the order of the matrix's rows are: Laguerre order 0-nDOGS for feature 1, Laguerre order 0-nDOGS for feature 2, ...
+    dogs_mat = np.zeros((nFeatures * nDOGS, nPoints))
+    
+    x_t = np.arange(nPoints)
+    for iEventType in range(nEventsTypes):
+        meanVal, ampPos, ampNeg, tPos, tNeg, sdPos, sdNeg = dogs_args[iEventType]
+        for iDOG in range(nDOGS):
+            lag_start_ind = (
+                iDOG * nFeaturesPerEventType * nEventsTypes
+                + iEventType * nFeaturesPerEventType
+            )
+            if (iDOG == 0) :
+                y = Gauss(x_t, tPos, sdPos)
+            elif (iDOG == 1) : 
+                y = DGauss(x_t, tPos, sdPos)
+            elif (iDOG == 2) : 
+                y = -Gauss(x_t, tNeg, sdNeg)
+            elif (iDOG ==3) :
+                y = -DGauss(x_t, tNeg, sdNeg)
+          
+            y = y / np.sqrt(np.sum(y**2))
+            dogs_mat[lag_start_ind : lag_start_ind + nFeaturesPerEventType, :] = y[
+                np.newaxis, :
+            ]
+
+    # for each event we will convolve the guassian functions and derivatives with the feature value
+    X[:, pair["events"][event_index_key]] = np.hstack([feature] * nDOGS).T
+    # now convolve the laguerre function with the feature value
+    X = fftconvolve(X, dogs_mat, axes=1, mode="full")[:, :nT]  # LG1: 20 pcONset, 20 pcOffset, LG1: 20 pcOnset, 20 pcOffset, ...
     return X
 
 
@@ -209,10 +303,6 @@ def generate_laguerre_features(
             ]
 
     # for each event we will convolve the laguerre function with the feature value
-    inds = pair["events"][
-        event_index_key
-    ]  # + int(laguerre_dt_s*srData['datasets'][iSet]['resp']['sampleRate'])
-    # inds = np.clip(inds, 0, nT-1)
     X[:, pair["events"][event_index_key]] = np.hstack([feature] * nLaguerre).T
     # now convolve the laguerre function with the feature value
     X = fftconvolve(X, laguerre_mat, axes=1, mode="full")[:, :nT]  # LG1: 20 pcONset, 20 pcOffset, LG1: 20 pcOnset, 20 pcOffset, ...
@@ -232,14 +322,13 @@ def get_prediction_r2(
 ):
     y = pair["resp"]["psth_smooth"]
     y_pred = generate_prediction(
-        pair, ridge, feature, laguerre_args, ridge_conv_filter, nPoints, nLaguerre
+        pair, ridge, feature, laguerre_args, nPoints, nLaguerre
     )
     return np.corrcoef(y, y_pred)[0, 1] ** 2
 
 
-# end slated for removal
 
-
+# This function is not used?
 def gen_y_avg_laguerre(pair, laguerre_args, nPts):
     x = generate_laguerre_features(
         pair, feature_key="onoff_feature", resp_key='psth_smooth', laguerre_args=laguerre_args, nLaguerrePoints=nPts, nLaguerre=5
@@ -255,36 +344,56 @@ def gen_y_avg(pair, ridge_conv_filter, nPoints=200, mult_values=False):
     y_pred = ridge_conv_filter.predict(x.T)
     return y_pred
 
+# end slated for removal
+
 
 def generate_prediction(
-    pair, ridge, feature, laguerre_args, ridge_conv_filter, nPoints=200, nLaguerre=5
+    pair, ridge, feature, basis_args, nPoints=200, nLaguerre=5
 ):
-    x = generate_laguerre_features(
+    if (nLaguerre > 0) :
+        x = generate_laguerre_features(
         pair,
         feature_key="pca_%s" % feature,
         resp_key='psth_smooth',
-        laguerre_args=laguerre_args[:,0:2],
+        laguerre_args=basis_args[:,0:2],
         nLaguerrePoints=nPoints,
         nLaguerre=nLaguerre,
-    )
+        )
+    else:
+        x = generate_dogs_features(
+        pair,
+        feature_key="pca_%s" % feature,
+        resp_key='psth_smooth',
+        dogs_args=basis_args,
+        nPoints=nPoints
+        )
+
     y_pred = ridge.predict(x.T)
     y_pred[y_pred < 0] = 0
     return y_pred
 
 
 def generate_pred_score(
-    pair, ridge, feature, laguerre_args, ridge_conv_filter, nPoints=200, nLaguerre=5
+    pair, ridge, feature, basis_args, ridge_conv_filter, nPoints=200, nLaguerre=5
 ):
-    x = generate_laguerre_features(
+    if (nLaguerre > 0) :
+        x = generate_laguerre_features(
         pair,
         feature_key="pca_%s" % feature,
         resp_key='psth_smooth',
-        laguerre_args=laguerre_args[:,0:2],
+        laguerre_args=basis_args[:,0:2],
         nLaguerrePoints=nPoints,
         nLaguerre=nLaguerre,
-    )
-    # y_avg = gen_y_avg_laguerre(pair, laguerre_args, nPoints)
-    y_avg = gen_y_avg(pair, ridge_conv_filter, nPoints)
+        )
+    else :
+        x = generate_dogs_features(
+        pair,
+        feature_key="pca_%s" % feature,
+        resp_key='psth_smooth',
+        dogs_args=basis_args,
+        nPoints=nPoints
+        )
+
     y = pair["resp"]["psth_smooth"]
     return ridge.score(x.T, y)
 
@@ -558,7 +667,7 @@ def fit_seg_model(
     Fits a segmented model to the given data.
     Parameters:
     srData (dict): The dataset containing events and responses.
-    nLaguerre (int): The number of Laguerre functions to use.
+    nLaguerre (int): The number of Laguerre functions to use. If equal to -1 DOGS fits to segmented kernels and their derivatives are used.
     nPoints (int): The number of points for the convolutional kernel.
     event_types (str): The type of events to consider.
     feature (str): The feature to use for PCA.
@@ -566,10 +675,10 @@ def fit_seg_model(
     pca (PCA, optional): Pre-fitted PCA object. If None, a new PCA will be fitted. Default is None.
     Returns:
     tuple: A tuple containing:
-        - pca (PCA): The fitted PCA object.
-        - ridge (RidgeCV): The ridge regression model for the response residuals.
-        - ridge_conv_filter (RidgeCV): The ridge regression model for the convolutional kernel.
-        - laguerre_args (ndarray): The fitted Laguerre parameters.
+        - pca (PCA): The fitted PCA object for the input features
+        - ridgeSI (RidgeCV): The ridge regression model for segmentation/identification.
+        - ridgeS (RidgeCV): The ridge regression model for the segmentation only model.
+        - basis_args (ndarray): The fitted parameters for the basis set used in the SI model - either Laguerre or DOGS.
     """
     nEventTypes = srData["datasets"][0]["events"][event_types].shape[1]
     nfeats = srData["datasets"][0]["events"]["%s_nfeats" % feature]
@@ -645,8 +754,8 @@ def fit_seg_model(
     learned_conv_kernel = SegModel_ridge.coef_.reshape(2, nPoints)
 
     # 3. now fit the laguerre parameters to the convolutional kernel
-    print("Fitting laguerre parameters")
-    partial_laguerre = partial(laguerre, xorder=0)
+    print("Fitting laguerre or DOGS parameters")
+
 
     def sum_n_laguerres(xt, *args):
         tau, alpha, *w = args
@@ -656,20 +765,47 @@ def fit_seg_model(
             out += w[iL] * laguerre(xt, 1.0, tau, alpha, xorder=iL) 
         return out
 
-    laguerre_args = np.zeros((nEventTypes, 7))
-    for iEventType in range(nEventTypes):
-        popt, pcov = curve_fit(
-            sum_n_laguerres,
-            np.arange(nPoints),
-            learned_conv_kernel[iEventType, :]-np.mean(learned_conv_kernel[iEventType, :]),
-            p0=[15, 5, 1, 1, 1, 1, 1],
-            bounds=(
+    if ( nLaguerre > 0 ):
+        print("Fitting Laguerre parameters")
+        basis_args = np.zeros((nEventTypes, 7))
+        for iEventType in range(nEventTypes):
+            popt, pcov = curve_fit(
+                sum_n_laguerres,
+                np.arange(nPoints),
+                learned_conv_kernel[iEventType, :]-np.mean(learned_conv_kernel[iEventType, :]),
+                p0=[15, 5, 1, 1, 1, 1, 1],
+                bounds=(
                 [0, 0, -np.inf, -np.inf, -np.inf, -np.inf, -np.inf],
                 [np.inf, np.inf, np.inf, np.inf, np.inf, np.inf, np.inf],
+                ),
+                method="trf",
+            )
+            basis_args[iEventType, :] = popt
+    else:
+        print("Fitting DOGS parameters")
+        basis_args = np.zeros((nEventTypes, 7))
+
+        # Find starting points - the bound might be too restrictive...
+        for iEventType in range(nEventTypes):
+            meanVal = np.mean(learned_conv_kernel[iEventType, :])
+            ampPos = np.max(learned_conv_kernel[iEventType, :])-meanVal
+            tPos = np.argmax(learned_conv_kernel[iEventType, :])
+            ampNeg = np.abs(np.min(learned_conv_kernel[iEventType, :])-meanVal)
+            tNeg = np.argmin(learned_conv_kernel[iEventType, :])
+            sdPos = sdNeg = 20
+            p0=[meanVal, ampPos, ampNeg, tPos, tNeg, sdPos, sdNeg]
+            popt, pcov = curve_fit(
+                dogs,
+                np.arange(nPoints),
+                learned_conv_kernel[iEventType, :]-np.mean(learned_conv_kernel[iEventType, :]),
+                p0=p0,
+                bounds=(
+                [np.min(learned_conv_kernel[iEventType, :]), 0, 0, 0, 0, 0, 0],
+                [np.max(learned_conv_kernel[iEventType, :]), np.inf, np.inf, nPoints, nPoints, nPoints, nPoints],
             ),
             method="trf",
-        )
-        laguerre_args[iEventType, :] = popt
+            )
+            basis_args[iEventType, :] = popt
 
     # 4. now fit the response to onsets and offsets using the features
     Y_avg_removed = None
@@ -677,16 +813,25 @@ def fit_seg_model(
     X = None
     for iSet in pair_train_set:
         pair = srData["datasets"][iSet]
-        x = generate_laguerre_features(
-            pair,
-            feature_key="pca_%s" % feature,
-            resp_key="psth_smooth",
-            laguerre_args=laguerre_args[:,0:2],
-            nLaguerrePoints=nPoints,
-            nLaguerre=nLaguerre,
-        )
-        # y = pair['resp']['psth_smooth'] - gen_y_avg_laguerre(pair, laguerre_args, nPoints)
-        y = pair["resp"]["psth_smooth"]  # - gen_y_avg(pair, ridge_conv_filter, nPoints)
+        if (nLaguerre > 0 ):
+            x = generate_laguerre_features(
+                pair,
+                feature_key="pca_%s" % feature,
+                resp_key="psth_smooth",
+                laguerre_args=basis_args[:,0:2],
+                nLaguerrePoints=nPoints,
+                nLaguerre=nLaguerre,
+            )
+        else:
+            x = generate_dogs_features(
+                pair,
+                feature_key="pca_%s" % feature,
+                resp_key="psth_smooth",
+                dogs_args=basis_args,
+                nPoints=nPoints,
+            )
+
+        y = pair["resp"]["psth_smooth"]  
         if "weights" not in pair["resp"]:
             yw = np.ones_like(y)
         else:
@@ -711,7 +856,7 @@ def fit_seg_model(
     SIModel_ridge.fit(X.T, Y_avg_removed, sample_weight=Y_weights)
 
     # 6. Return the ridge model for the residuals, the ridge model for the onsets, and the laguerre parameters
-    return pca, SIModel_ridge, SegModel_ridge, laguerre_args
+    return pca, SIModel_ridge, SegModel_ridge, basis_args
 
 
 # high level function
@@ -723,7 +868,7 @@ def process_unit(
     nPoints=200,
     mult_values=False,
     plot=False,
-    nLaguerre=5,
+    nLaguerre=5,                          # Set to -1 to used DOGS and their derivatives
     pca=None,
     do_test_set=False,
 ):
@@ -739,7 +884,7 @@ def process_unit(
         pair_train_set = np.arange(pairCount)
         pair_test_set = []
 
-    pca, ridge, ridge_conv_filter, laguerre_args = fit_seg_model(
+    pca, ridge, ridge_conv_filter, basis_args = fit_seg_model(
         srData,
         nLaguerre,
         nPoints,
@@ -758,30 +903,57 @@ def process_unit(
         for iSet in pair_test_set
     ]
 
-    all_r2_train = [
-        get_prediction_r2(
-            srData["datasets"][iSet],
-            ridge,
-            feature,
-            laguerre_args[:,0:2],
-            ridge_conv_filter,
-            nPoints,
-            nLaguerre,
-        )
-        for iSet in pair_train_set
-    ]
-    all_r2_test = [
-        get_prediction_r2(
-            srData["datasets"][iSet],
-            ridge,
-            feature,
-            laguerre_args[:,0:2],
-            ridge_conv_filter,
-            nPoints,
-            nLaguerre,
-        )
-        for iSet in pair_test_set
-    ]
+    if (nLaguerre > 0):
+        all_r2_train = [
+            get_prediction_r2(
+                srData["datasets"][iSet],
+                ridge,
+                feature,
+                basis_args[:,0:2],
+                ridge_conv_filter,
+                nPoints,
+                nLaguerre,
+            )
+            for iSet in pair_train_set
+        ]
+        all_r2_test = [
+            get_prediction_r2(
+                srData["datasets"][iSet],
+                ridge,
+                feature,
+                basis_args[:,0:2],
+                ridge_conv_filter,
+                nPoints,
+                nLaguerre,
+            )
+            for iSet in pair_test_set
+        ]
+    else:
+        all_r2_train = [
+            get_prediction_r2(
+                srData["datasets"][iSet],
+                ridge,
+                feature,
+                basis_args,
+                ridge_conv_filter,
+                nPoints,
+                nLaguerre,
+            )
+            for iSet in pair_train_set
+        ]
+        all_r2_test = [
+            get_prediction_r2(
+                srData["datasets"][iSet],
+                ridge,
+                feature,
+                basis_args,
+                ridge_conv_filter,
+                nPoints,
+                nLaguerre,
+            )
+            for iSet in pair_test_set
+        ]
+
 
     # R2Ceil = preprocSound.calculate_EV(srData, nPoints, mult_values)
     if plot:
@@ -799,7 +971,7 @@ def process_unit(
         pca,
         ridge,
         ridge_conv_filter,
-        laguerre_args,
+        basis_args,
         [
             np.mean(simple_r2_train),
             np.mean(simple_r2_test),
