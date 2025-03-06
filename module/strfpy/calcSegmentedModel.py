@@ -201,7 +201,7 @@ def generate_dogs_features(
     nFeaturesPerEventType = nFeatures // nEventsTypes
     # the features are organized in the following way:
     # the first nFeatures/nEventTypes features are for the first event type, the second nFeatures/nEventTypes are for the second event type, ...
-    nDOGS = 4
+    nDOGS = 5
     X = np.zeros((nFeatures * nDOGS, nT))
 
     # DOGS functions for each order
@@ -224,6 +224,8 @@ def generate_dogs_features(
                 y = -Gauss(x_t, tNeg, sdNeg)
             elif (iDOG ==3) :
                 y = -DGauss(x_t, tNeg, sdNeg)
+            elif (iDOG ==4):
+                y = np.ones(nPoints)
           
             y = y / np.sqrt(np.sum(y**2))
             dogs_mat[lag_start_ind : lag_start_ind + nFeaturesPerEventType, :] = y[
