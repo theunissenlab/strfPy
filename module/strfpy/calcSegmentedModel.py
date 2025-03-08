@@ -311,25 +311,27 @@ def generate_laguerre_features(
     return X
 
 
-# Slated for removal
-def get_simple_prediction_r2(pair, ridge_conv_filter, nPoints, mult_values=False):
+def get_simple_prediction_r2_Values(pair, ridge_conv_filter, nPoints, mult_values=False):
+# Returns all componnents needed to calculate the r2 for the segmented model
+    
     y = pair["resp"]["psth_smooth"]
     x = arbitrary_kernel(pair, nPoints=nPoints, resp_key='psth_smooth', mult_values=mult_values)
     y_pred = ridge_conv_filter.predict(x.T)
-    return np.corrcoef(y, y_pred)[0, 1] ** 2
+    
+    return np.sum(y), np.sum(y*y), np.sum(y_pred), np.sum(y_pred*y_pred), np.sum(y*y_pred), len(y_pred)
 
 
-def get_prediction_r2(
-    pair, ridge, feature, laguerre_args, ridge_conv_filter, nPoints, nLaguerre=5
-):
+def get_prediction_r2_Values(pair, ridge, feature, laguerre_args, ridge_conv_filter, nPoints, nLaguerre=5):
+# Returns all componnents needed to calculate the r2 for the segmented + Identification model
+    
     y = pair["resp"]["psth_smooth"]
-    y_pred = generate_prediction(
-        pair, ridge, feature, laguerre_args, nPoints, nLaguerre
-    )
-    return np.corrcoef(y, y_pred)[0, 1] ** 2
+    y_pred = generate_prediction(pair, ridge, feature, laguerre_args, nPoints, nLaguerre)
+
+    return np.sum(y), np.sum(y*y), np.sum(y_pred), np.sum(y_pred*y_pred), np.sum(y*y_pred), len(y_pred)
 
 
 
+# Slated for removal
 # This function is not used?
 def gen_y_avg_laguerre(pair, laguerre_args, nPts):
     x = generate_laguerre_features(
@@ -869,23 +871,18 @@ def process_unit(
     feature="log_spect_windows",
     nPoints=200,
     mult_values=False,
-    plot=False,
-    nLaguerre=5,                          # Set to -1 to used DOGS and their derivatives
+    nLaguerre=5,                          # Set to -1 to use DOGS and their derivatives
     pca=None,
-    do_test_set=False,
+    LOO=True,                             # Set to False for speed and testing but you won't get cross-validation data
 ):
 
     # parameters for fit
     event_types = "onoff_feature"
     pairCount = len(srData["datasets"])
 
-    if do_test_set:
-        pair_test_set = np.random.choice(range(pairCount), 2, replace=False)
-        pair_train_set = np.setdiff1d(range(pairCount), pair_test_set)
-    else:
-        pair_train_set = np.arange(pairCount)
-        pair_test_set = []
 
+    # First fit the full model with the entire data set
+    pair_train_set = np.arange(pairCount)
     pca, ridge, ridge_conv_filter, basis_args = fit_seg_model(
         srData,
         nLaguerre,
@@ -896,77 +893,120 @@ def process_unit(
         pca=pca,
     )
 
-    simple_r2_train = [
-        get_simple_prediction_r2(srData["datasets"][iSet], ridge_conv_filter, nPoints)
-        for iSet in pair_train_set
-    ]
-    simple_r2_test = [
-        get_simple_prediction_r2(srData["datasets"][iSet], ridge_conv_filter, nPoints)
-        for iSet in pair_test_set
-    ]
+    # Get predictions and calculate the single R2 for segment only model called here simple for the entire data set used for training and testing
+    simple_sum_xy = 0
+    simple_sum_xx = 0
+    simple_sum_yy = 0
+    simple_sum_x =  0
+    simple_sum_y =  0
+    simple_sum_count = 0
+    for iSet in pair_train_set:
+        sum_x, sum_xx, sum_y, sum_yy, sum_xy, sum_count = get_simple_prediction_r2_Values(srData["datasets"][iSet], ridge_conv_filter, nPoints)
+        simple_sum_xy += sum_xy
+        simple_sum_xx += sum_xx
+        simple_sum_yy += sum_yy
+        simple_sum_x +=  sum_x
+        simple_sum_y +=  sum_y
+        simple_sum_count += sum_count
+    x_mean = simple_sum_x/simple_sum_count
+    y_mean = simple_sum_y/simple_sum_count
+    simple_r2_train = (simple_sum_xy/simple_sum_count - x_mean*y_mean)**2/((simple_sum_xx/simple_sum_count - x_mean**2)*(simple_sum_yy/simple_sum_count - y_mean**2))
 
-    if (nLaguerre > 0):
-        all_r2_train = [
-            get_prediction_r2(
-                srData["datasets"][iSet],
-                ridge,
-                feature,
-                basis_args[:,0:2],
-                ridge_conv_filter,
-                nPoints,
+    # Get predictions and calculate the single R2 for segment + identification model called here all for the entire data set used for training and testing
+    all_sum_xy = 0
+    all_sum_xx = 0
+    all_sum_yy = 0
+    all_sum_x =  0
+    all_sum_y =  0
+    all_sum_count = 0
+    for iSet in pair_train_set:
+        if (nLaguerre > 0):
+            sum_x, sum_xx, sum_y, sum_yy, sum_xy, sum_count = get_prediction_r2_Values( srData["datasets"][iSet], 
+                                                                ridge, feature, basis_args[:,0:2], ridge_conv_filter, nPoints, nLaguerre)
+        else:
+            sum_x, sum_xx, sum_y, sum_yy, sum_xy, sum_count = get_prediction_r2_Values( srData["datasets"][iSet],
+                                                                ridge, feature, basis_args, ridge_conv_filter, nPoints, nLaguerre)
+        all_sum_xy += sum_xy
+        all_sum_xx += sum_xx
+        all_sum_yy += sum_yy
+        all_sum_x +=  sum_x
+        all_sum_y +=  sum_y
+        all_sum_count += sum_count
+    x_mean = all_sum_x/all_sum_count
+    y_mean = all_sum_y/all_sum_count    
+    all_r2_train = (all_sum_xy/all_sum_count - x_mean*y_mean)**2/((all_sum_xx/all_sum_count - x_mean**2)*(all_sum_yy/all_sum_count - y_mean**2))
+    
+    
+    if LOO:
+    # Now do Leave One Out Cross-Validation (LOOCV)
+
+    # Reset all counters
+        simple_sum_xy = 0
+        simple_sum_xx = 0
+        simple_sum_yy = 0
+        simple_sum_x =  0
+        simple_sum_y =  0
+        simple_sum_count = 0
+        
+        all_sum_xy = 0
+        all_sum_xx = 0
+        all_sum_yy = 0
+        all_sum_x =  0
+        all_sum_y =  0
+        all_sum_count = 0
+    
+        for iLO in range(pairCount):
+            pair_test_set = np.array([iLO])
+            pair_train_set = np.setdiff1d(range(pairCount), pair_test_set)
+        
+            # Fit model on training set
+            pca_loo, ridge_loo, ridge_conv_filter_loo, basis_args_loo = fit_seg_model(
+                srData,
                 nLaguerre,
-            )
-            for iSet in pair_train_set
-        ]
-        all_r2_test = [
-            get_prediction_r2(
-                srData["datasets"][iSet],
-                ridge,
-                feature,
-                basis_args[:,0:2],
-                ridge_conv_filter,
                 nPoints,
-                nLaguerre,
+                event_types,
+                feature,
+                pair_train_set,
+                pca=pca,
             )
-            for iSet in pair_test_set
-        ]
+
+            # Get Prediction on left out set
+            # First for segmented model
+            sum_x, sum_xx, sum_y, sum_yy, sum_xy, sum_count =get_simple_prediction_r2_Values (srData["datasets"][iLO], ridge_conv_filter_loo, nPoints)
+            simple_sum_xy += sum_xy
+            simple_sum_xx += sum_xx
+            simple_sum_yy += sum_yy
+            simple_sum_x +=  sum_x
+            simple_sum_y +=  sum_y
+            simple_sum_count += sum_count
+
+            # Next for segmented + Indentification model
+            if (nLaguerre > 0):
+                sum_x, sum_xx, sum_y, sum_yy, sum_xy, sum_count = get_prediction_r2_Values(srData["datasets"][iLO],
+                                                        ridge_loo, feature, basis_args_loo[:,0:2], ridge_conv_filter_loo, nPoints, nLaguerre)
+            else:
+                sum_x, sum_xx, sum_y, sum_yy, sum_xy, sum_count = get_prediction_r2_Values(srData["datasets"][iLO],
+                                                        ridge_loo, feature, basis_args_loo, ridge_conv_filter_loo, nPoints, nLaguerre)
+
+            all_sum_xy += sum_xy
+            all_sum_xx += sum_xx
+            all_sum_yy += sum_yy
+            all_sum_x +=  sum_x
+            all_sum_y +=  sum_y
+            all_sum_count += sum_count
+
+        # Now calculate R2 values
+        # R2Ceil = preprocSound.calculate_EV(srData, nPoints, mult_values)
+        x_mean = simple_sum_x/simple_sum_count
+        y_mean = simple_sum_y/simple_sum_count
+        simple_r2_test = (simple_sum_xy/simple_sum_count - x_mean*y_mean)**2/((simple_sum_xx/simple_sum_count - x_mean**2)*(simple_sum_yy/simple_sum_count - y_mean**2))
+    
+        x_mean = all_sum_x/all_sum_count
+        y_mean = all_sum_y/all_sum_count    
+        all_r2_test = (all_sum_xy/all_sum_count - x_mean*y_mean)**2/((all_sum_xx/all_sum_count - x_mean**2)*(all_sum_yy/all_sum_count - y_mean**2))
     else:
-        all_r2_train = [
-            get_prediction_r2(
-                srData["datasets"][iSet],
-                ridge,
-                feature,
-                basis_args,
-                ridge_conv_filter,
-                nPoints,
-                nLaguerre,
-            )
-            for iSet in pair_train_set
-        ]
-        all_r2_test = [
-            get_prediction_r2(
-                srData["datasets"][iSet],
-                ridge,
-                feature,
-                basis_args,
-                ridge_conv_filter,
-                nPoints,
-                nLaguerre,
-            )
-            for iSet in pair_test_set
-        ]
-
-
-    # R2Ceil = preprocSound.calculate_EV(srData, nPoints, mult_values)
-    if plot:
-        plt.figure()
-        # make a paired box plot of the r2 values from simple to all
-        plt.scatter(simple_r2_train, all_r2_train, label="Train")
-        plt.scatter(simple_r2_test, all_r2_test, label="Test")
-        plt.xlabel("Event R2")
-        plt.ylabel("Fit R2")
-        # and plot the line y=x
-        plt.plot([0, 1], [0, 1], color="black")
+        simple_r2_test = 0.0
+        all_r2_test = 0.0
 
     return (
         srData,
@@ -975,9 +1015,9 @@ def process_unit(
         ridge_conv_filter,
         basis_args,
         [
-            np.mean(simple_r2_train),
-            np.mean(simple_r2_test),
-            np.mean(all_r2_train),
-            np.mean(all_r2_test),
+            simple_r2_train,
+            simple_r2_test,
+            all_r2_train,
+            all_r2_test,
         ],
     )  # , R2Ceil
