@@ -405,7 +405,7 @@ def generate_pred_score(
 # preproc function
 
 
-def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, tdelta=0, plotFlg = False):
+def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, tdelta=0, plotFlg = False, seg_spec_lookup=None):
     """
     Preprocesses stimulus-response data by segmenting the stimulus based on its envelope, calculating the spectrogram,
     PSTH (Peri-Stimulus Time Histogram), and MPS (Modulation Power Spectrum).
@@ -415,6 +415,7 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
     respChunkLen (int, optional): Total chunk length (including segment buffer) in number of points. Default is 150.
     segmentBuffer (int, optional): Number of points on each side of segment for response and MPS. Default is 25.
     tdelta (int, optional): Time delta to offset the events. Default is 0.
+    seg_spec_lookup (dict, optional): Dictionary containing the spectrogram for each stimulus to be used for segmentation
     Returns:
     None: The function modifies the srData dictionary in place, adding preprocessed data to it.
     """
@@ -458,6 +459,11 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
         # fs , soundStim = wavfile.read(waveFile)
         # soundLen = soundStim.size
         spectro = np.copy(srData["datasets"][iSet]["stim"]["tfrep"]["spec"])
+        # if we have a spec_lookup, we will use it to get the spectrogram
+        if seg_spec_lookup is not None:
+            seg_spectro = np.asarray(seg_spec_lookup[srData["datasets"][iSet]["stim"]["rawFile"]].data).T
+        else:
+            seg_spectro = spectro
         
         # This normalization is done at the srData level so that the relative amplitude of the stims is preserved. 
         # dBMax = spectro.max()
@@ -466,7 +472,7 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
         # set the y ticks to freq
         nFreqs = len(srData["datasets"][iSet]["stim"]["tfrep"]["f"])
 
-        ampenv = np.mean(spectro, axis=0)
+        ampenv = np.mean(seg_spectro, axis=0)
         ampfs = srData["datasets"][iSet]["stim"]["sampleRate"]
 
         # nSound = int((respChunkLen)*fs/ampfs)   # number of time points in sound chunks - should be the same for all stimulus-response pairs
