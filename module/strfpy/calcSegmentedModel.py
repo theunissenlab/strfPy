@@ -18,6 +18,7 @@ from sklearn.decomposition import PCA
 from sklearn.linear_model import RidgeCV
 import seaborn as sns
 from functools import partial
+from statistics import mode
 
 # Depednecies from Theunissen Lab
 # from soundsig.sound import BioSound
@@ -311,20 +312,78 @@ def generate_laguerre_features(
     return X
 
 
-def get_simple_prediction_r2_Values(pair, ridge_conv_filter, nPoints, mult_values=False):
+def get_simple_prediction_r2_Values(pair, ridge_conv_filter, nPoints, ntrials: int, smWindow = 31, mult_values=False):
 # Returns all componnents needed to calculate the r2 for the segmented model
     
-    y = pair["resp"]["psth_smooth"]
+    if ~isinstance(ntrials, int):
+        try:
+            ntrials = int(ntrials)
+        except ValueError:
+            raise ValueError("ntrials argument must be an integer or convertible")
+        
+    resp = pair['resp']
+    nactual = len(resp['trialDurations'])
+
+    if (nactual < ntrials):
+        return 0, 0, 0, 0, 0, 0
+    elif (nactual > ntrials):
+        # The Hanning window
+        wHann = windows.hann(
+            smWindow, sym=True
+        )  # The 31 ms (number of points) hanning window used to smooth the PSTH
+        wHann = wHann / sum(wHann)
+        # recalculate the psth_smooth
+        bin_size = 1
+        nbins = len(resp['psth'])
+
+        weights = (resp['trialDurations'][0:ntrials] >= np.arange(nbins)[:, None]).sum(axis=1)
+        psth_idx, counts = np.unique(np.round(np.concatenate(resp['rawSpikeTimes'][0:ntrials]) * 1000 / bin_size).astype(int), return_counts=True)
+        psth = np.zeros(nbins)
+        psth[psth_idx[psth_idx < nbins]] = counts[psth_idx < nbins]
+        psth[weights > 0] /= weights[weights > 0]
+        y = np.convolve(psth, wHann, mode="same")
+    else :
+        y = pair["resp"]["psth_smooth"]
+
     x = arbitrary_kernel(pair, nPoints=nPoints, resp_key='psth_smooth', mult_values=mult_values)
     y_pred = ridge_conv_filter.predict(x.T)
     
     return np.sum(y), np.sum(y*y), np.sum(y_pred), np.sum(y_pred*y_pred), np.sum(y*y_pred), len(y_pred)
 
 
-def get_prediction_r2_Values(pair, ridge, feature, laguerre_args, ridge_conv_filter, nPoints, nLaguerre=5):
+def get_prediction_r2_Values(pair, ridge, feature, laguerre_args, ridge_conv_filter, nPoints, ntrials: int, smWindow = 31, nLaguerre=5):
 # Returns all componnents needed to calculate the r2 for the segmented + Identification model
     
-    y = pair["resp"]["psth_smooth"]
+    if ~isinstance(ntrials, int):
+        try:
+            ntrials = int(ntrials)
+        except ValueError:
+            raise ValueError("ntrials argument must be an integer or convertible")
+        
+    resp = pair['resp']
+    nactual = len(resp['trialDurations'])
+
+    if (nactual < ntrials):
+        return 0, 0, 0, 0, 0, 0
+    elif (nactual > ntrials):
+        # The Hanning window
+        wHann = windows.hann(
+            smWindow, sym=True
+        )  # The 31 ms (number of points) hanning window used to smooth the PSTH
+        wHann = wHann / sum(wHann)
+        # recalculate the psth_smooth
+        bin_size = 1
+        nbins = len(resp['psth'])
+
+        weights = (resp['trialDurations'][0:ntrials] >= np.arange(nbins)[:, None]).sum(axis=1)
+        psth_idx, counts = np.unique(np.round(np.concatenate(resp['rawSpikeTimes'][0:ntrials]) * 1000 / bin_size).astype(int), return_counts=True)
+        psth = np.zeros(nbins)
+        psth[psth_idx[psth_idx < nbins]] = counts[psth_idx < nbins]
+        psth[weights > 0] /= weights[weights > 0]
+        y = np.convolve(psth, wHann, mode="same")
+    else :
+        y = pair["resp"]["psth_smooth"]
+
     y_pred = generate_prediction(pair, ridge, feature, laguerre_args, nPoints, nLaguerre)
 
     return np.sum(y), np.sum(y*y), np.sum(y_pred), np.sum(y_pred*y_pred), np.sum(y*y_pred), len(y_pred)
@@ -405,7 +464,7 @@ def generate_pred_score(
 # preproc function
 
 
-def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, tdelta=0, plotFlg = False, seg_spec_lookup=None):
+def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, tdelta=0, plotFlg = False, seg_spec_lookup=None, smWindow=31):
     """
     Preprocesses stimulus-response data by segmenting the stimulus based on its envelope, calculating the spectrogram,
     PSTH (Peri-Stimulus Time Histogram), and MPS (Modulation Power Spectrum).
@@ -416,13 +475,14 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
     segmentBuffer (int, optional): Number of points on each side of segment for response and MPS. Default is 25.
     tdelta (int, optional): Time delta to offset the events. Default is 0.
     seg_spec_lookup (dict, optional): Dictionary containing the spectrogram for each stimulus to be used for segmentation
+    smWindow (int, optional): Size of the smoothing window used to get a smoothed PSTH
     Returns:
     None: The function modifies the srData dictionary in place, adding preprocessed data to it.
     """
     # PREPROCESSING
     # - Segmentation of the stimulus based on the envelope
     # - Calculation of the spectrogram
-    # - Calculation of the PSTH
+    # - Calculation of the smoothed PSTH
     # - Calculation of the MPS
 
     # Segmentation based on derivative of the envelope
@@ -440,8 +500,8 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
 
 
     wHann = windows.hann(
-        31, sym=True
-    )  # The 21 ms (number of points) hanning window used to smooth the PSTH
+        smWindow, sym=True
+    )  # The 31 ms (number of points) hanning window used to smooth the PSTH
     wHann = wHann / sum(wHann)
 
     pairCount = len(srData["datasets"])  # number of stim/response pairs
@@ -879,7 +939,8 @@ def process_unit(
     mult_values=False,
     nLaguerre=5,                          # Set to -1 to use DOGS and their derivatives
     pca=None,
-    LOO=True,                             # Set to False for speed and testing but you won't get cross-validation data
+    LOO=True,                             # LeaveOneOut (LOO) cross-validation. Set to False for speed and testing but you won't get cross-validation data
+                                          # LOO is performed by leaving out all datasets obtained for a particular stim name.
 ):
 
     # parameters for fit
@@ -906,14 +967,24 @@ def process_unit(
     simple_sum_x =  0
     simple_sum_y =  0
     simple_sum_count = 0
+    ntrials = np.zeros(len(pair_train_set))
     for iSet in pair_train_set:
-        sum_x, sum_xx, sum_y, sum_yy, sum_xy, sum_count = get_simple_prediction_r2_Values(srData["datasets"][iSet], ridge_conv_filter, nPoints)
-        simple_sum_xy += sum_xy
-        simple_sum_xx += sum_xx
-        simple_sum_yy += sum_yy
-        simple_sum_x +=  sum_x
-        simple_sum_y +=  sum_y
-        simple_sum_count += sum_count
+        resp = srData['datasets'][iSet]['resp']
+        ntrials[iSet] = len(resp['trialDurations'])
+    
+    ntrialsR2 = int(mode(ntrials))
+    print('Max trials %d Min trials %d  Mode %d' % (ntrials.max(), ntrials.min(), ntrialsR2) )
+
+    for iSet in pair_train_set:
+        if (ntrials[iSet] >= ntrialsR2) :
+            sum_x, sum_xx, sum_y, sum_yy, sum_xy, sum_count = get_simple_prediction_r2_Values(srData["datasets"][iSet], ridge_conv_filter, nPoints, ntrialsR2, smWindow=31)
+            simple_sum_xy += sum_xy
+            simple_sum_xx += sum_xx
+            simple_sum_yy += sum_yy
+            simple_sum_x +=  sum_x
+            simple_sum_y +=  sum_y
+            simple_sum_count += sum_count
+
     x_mean = simple_sum_x/simple_sum_count
     y_mean = simple_sum_y/simple_sum_count
     simple_r2_train = (simple_sum_xy/simple_sum_count - x_mean*y_mean)**2/((simple_sum_xx/simple_sum_count - x_mean**2)*(simple_sum_yy/simple_sum_count - y_mean**2))
@@ -926,18 +997,19 @@ def process_unit(
     all_sum_y =  0
     all_sum_count = 0
     for iSet in pair_train_set:
-        if (nLaguerre > 0):
-            sum_x, sum_xx, sum_y, sum_yy, sum_xy, sum_count = get_prediction_r2_Values( srData["datasets"][iSet], 
-                                                                ridge, feature, basis_args[:,0:2], ridge_conv_filter, nPoints, nLaguerre)
-        else:
-            sum_x, sum_xx, sum_y, sum_yy, sum_xy, sum_count = get_prediction_r2_Values( srData["datasets"][iSet],
-                                                                ridge, feature, basis_args, ridge_conv_filter, nPoints, nLaguerre)
-        all_sum_xy += sum_xy
-        all_sum_xx += sum_xx
-        all_sum_yy += sum_yy
-        all_sum_x +=  sum_x
-        all_sum_y +=  sum_y
-        all_sum_count += sum_count
+        if (ntrials[iSet] >= ntrialsR2) :
+            if (nLaguerre > 0):
+                sum_x, sum_xx, sum_y, sum_yy, sum_xy, sum_count = get_prediction_r2_Values( srData["datasets"][iSet], 
+                                                                ridge, feature, basis_args[:,0:2], ridge_conv_filter, nPoints, ntrialsR2, nLaguerre=nLaguerre)
+            else:
+                sum_x, sum_xx, sum_y, sum_yy, sum_xy, sum_count = get_prediction_r2_Values( srData["datasets"][iSet],
+                                                                ridge, feature, basis_args, ridge_conv_filter, nPoints, ntrialsR2, nLaguerre=nLaguerre)
+            all_sum_xy += sum_xy
+            all_sum_xx += sum_xx
+            all_sum_yy += sum_yy
+            all_sum_x +=  sum_x
+            all_sum_y +=  sum_y
+            all_sum_count += sum_count
     x_mean = all_sum_x/all_sum_count
     y_mean = all_sum_y/all_sum_count    
     all_r2_train = (all_sum_xy/all_sum_count - x_mean*y_mean)**2/((all_sum_xx/all_sum_count - x_mean**2)*(all_sum_yy/all_sum_count - y_mean**2))
@@ -945,6 +1017,7 @@ def process_unit(
     
     if LOO:
     # Now do Leave One Out Cross-Validation (LOOCV)
+        print('Starting cross-validation calculations')
 
     # Reset all counters
         simple_sum_xy = 0
@@ -953,16 +1026,29 @@ def process_unit(
         simple_sum_x =  0
         simple_sum_y =  0
         simple_sum_count = 0
-        
+
         all_sum_xy = 0
         all_sum_xx = 0
         all_sum_yy = 0
         all_sum_x =  0
         all_sum_y =  0
         all_sum_count = 0
+
+        # Find unique stimuli
+        stim_names = []
+        for ds in srData['datasets']:
+            stim_names.append(ds['stim']['rawFile'])
+
+        unique_stims = np.unique(stim_names)
     
-        for iLO in range(pairCount):
-            pair_test_set = np.array([iLO])
+        for stimLO in unique_stims:
+
+            pair_test_set = []
+            for ids, ds in enumerate(srData['datasets']):
+                if (ds['stim']['rawFile'] == stimLO):
+                    pair_test_set.append(ids)
+            
+            pair_test_set = np.array(pair_test_set)
             pair_train_set = np.setdiff1d(range(pairCount), pair_test_set)
         
             # Fit model on training set
@@ -978,28 +1064,29 @@ def process_unit(
 
             # Get Prediction on left out set
             # First for segmented model
-            sum_x, sum_xx, sum_y, sum_yy, sum_xy, sum_count =get_simple_prediction_r2_Values (srData["datasets"][iLO], ridge_conv_filter_loo, nPoints)
-            simple_sum_xy += sum_xy
-            simple_sum_xx += sum_xx
-            simple_sum_yy += sum_yy
-            simple_sum_x +=  sum_x
-            simple_sum_y +=  sum_y
-            simple_sum_count += sum_count
+            for iLO in pair_test_set:
+                sum_x, sum_xx, sum_y, sum_yy, sum_xy, sum_count =get_simple_prediction_r2_Values (srData["datasets"][iLO], ridge_conv_filter_loo, nPoints, ntrialsR2, smWindow=31)
+                simple_sum_xy += sum_xy
+                simple_sum_xx += sum_xx
+                simple_sum_yy += sum_yy
+                simple_sum_x +=  sum_x
+                simple_sum_y +=  sum_y
+                simple_sum_count += sum_count
 
-            # Next for segmented + Indentification model
-            if (nLaguerre > 0):
-                sum_x, sum_xx, sum_y, sum_yy, sum_xy, sum_count = get_prediction_r2_Values(srData["datasets"][iLO],
-                                                        ridge_loo, feature, basis_args_loo[:,0:2], ridge_conv_filter_loo, nPoints, nLaguerre)
-            else:
-                sum_x, sum_xx, sum_y, sum_yy, sum_xy, sum_count = get_prediction_r2_Values(srData["datasets"][iLO],
-                                                        ridge_loo, feature, basis_args_loo, ridge_conv_filter_loo, nPoints, nLaguerre)
+                # Next for segmented + Indentification model
+                if (nLaguerre > 0):
+                    sum_x, sum_xx, sum_y, sum_yy, sum_xy, sum_count = get_prediction_r2_Values(srData["datasets"][iLO],
+                                                        ridge_loo, feature, basis_args_loo[:,0:2], ridge_conv_filter_loo, nPoints, ntrialsR2, nLaguerre=nLaguerre)
+                else:
+                    sum_x, sum_xx, sum_y, sum_yy, sum_xy, sum_count = get_prediction_r2_Values(srData["datasets"][iLO],
+                                                        ridge_loo, feature, basis_args_loo, ridge_conv_filter_loo, nPoints, ntrialsR2, nLaguerre=nLaguerre)
 
-            all_sum_xy += sum_xy
-            all_sum_xx += sum_xx
-            all_sum_yy += sum_yy
-            all_sum_x +=  sum_x
-            all_sum_y +=  sum_y
-            all_sum_count += sum_count
+                all_sum_xy += sum_xy
+                all_sum_xx += sum_xx
+                all_sum_yy += sum_yy
+                all_sum_x +=  sum_x
+                all_sum_y +=  sum_y
+                all_sum_count += sum_count
 
         # Now calculate R2 values
         # R2Ceil = preprocSound.calculate_EV(srData, nPoints, mult_values)
@@ -1025,5 +1112,6 @@ def process_unit(
             simple_r2_test,
             all_r2_train,
             all_r2_test,
-        ],
+            ntrialsR2
+        ]
     )  # , R2Ceil

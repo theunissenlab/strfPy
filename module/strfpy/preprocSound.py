@@ -21,6 +21,10 @@ def weighted_corr(x, y, w):
     """Weighted Correlation"""
     return weighted_cov(x, y, w) / np.sqrt(weighted_cov(x, x, w) * weighted_cov(y, y, w))
 
+def Pearson_r(x,y):
+    "Pearson Correlation Coefficient"
+    return np.sum((x-np.mean(x))*(y-np.mean(y)))/np.sqrt(np.sum((x-np.mean(x))**2)*np.sum((y-np.mean(y))**2))
+
 
 def preprocess_sound_raw_nospike(stim_lookup, all_trials, preprocess_type='ft', stim_params={}):
     # params
@@ -299,7 +303,7 @@ def get_mic_data(nwb, trial, ch=1):
     mic_trial = mic_data[start_id:end_id]
     return mic_trial[:,1]
 
-def generate_srData_nwb_single_trials(nwb, intervals_name, unit_id):
+def generate_srData_nwb_single_trials(nwb, intervals_name, unit_id, balanceFlg = True):
     # params
     DBNOISE = 80.0  
     stim_sample_rate = 1000.0
@@ -318,7 +322,8 @@ def generate_srData_nwb_single_trials(nwb, intervals_name, unit_id):
     all_trials = all_trials[valid_trials]
 
     # lets balance the trials by stimuli name
-    all_trials = balance_trials(all_trials, ['stimuli_name'])
+    if balanceFlg:
+        all_trials = balance_trials(all_trials, ['stimuli_name'])
     
 
     # lets get the precomputed spectrograms
@@ -882,6 +887,50 @@ def preprocess_sound_nwb_singletrial(nwb_file, intervals_name, unit_id, preproce
 
         return srData
 
+def estimate_SNR(srData, smWindow=31):
+    # Estimate the single trial SNR in a stimulus response data set.  smWindow is the smoothing window and should match the one used in the model in preprocess_srData() in calcSegmentedModel
+    
+    pairCount = len(srData['datasets'])
+    wHann = windows.hann(smWindow, sym=True)   # The 21 ms (number of points) hanning window used to smooth the PSTH
+    wHann = wHann/sum(wHann)
+
+    totSNR = 0
+    totWeight = 0
+
+    for iSet in range(pairCount):
+        resp = srData['datasets'][iSet]['resp']
+
+        ntrials = len(resp['trialDurations'])
+
+        # Divide the data into two even halfs
+        if (ntrials % 2):
+            ntrials = ntrials-1
+
+        nT = int(np.min(resp['trialDurations'][0:ntrials]))
+        spike_inds = resp['rawSpikeIndicies'][0:ntrials]
+
+        # lets split the trials into two halves
+        stim_df1 = spike_inds[0:ntrials:2]
+        stim_df2 = spike_inds[1:ntrials:2]
+
+        # get the psth for each half
+        psth_idx_1, counts_1 = np.unique(np.concatenate(stim_df1), return_counts=True)
+        psth_idx_2, counts_2 = np.unique(np.concatenate(stim_df2), return_counts=True)
+        psth1 = np.zeros(nT)
+        psth2 = np.zeros(nT)
+        psth1[psth_idx_1[psth_idx_1<nT]] = counts_1[psth_idx_1<nT]
+        psth2[psth_idx_2[psth_idx_2<nT]] = counts_2[psth_idx_2<nT]
+
+        # Smooth the psth halves, cross-correlate and estimate the unscaled trial SNR
+        psth1 = np.convolve(psth1, wHann, mode='same')
+        psth2 = np.convolve(psth2, wHann, mode='same')
+
+        r = Pearson_r(psth1, psth2)
+        
+        totSNR += (2*r/(1-r))*nT
+        totWeight += nT*ntrials
+
+    return totSNR/totWeight
 
 def calculate_EV(srData, nPoints=200, mult_values=False):
     # iterate through each pair
