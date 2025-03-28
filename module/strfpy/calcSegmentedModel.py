@@ -731,7 +731,7 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
 
 
 def fit_seg_model(
-    srData, nLaguerre, nPoints, event_types, feature, pair_train_set=None, pca=None
+    srData, nLaguerre, nPoints, event_types, feature, pair_train_set=None, pca=None, tol = np.array([0.100, 0.050, 0.010, 0.005, 1e-03, 1e-04, 5e-05, 0])
 ):
     """
     Fits a segmented model to the given data.
@@ -746,8 +746,8 @@ def fit_seg_model(
     Returns:
     tuple: A tuple containing:
         - pca (PCA): The fitted PCA object for the input features
-        - ridgeSI (RidgeCV): The ridge regression model for segmentation/identification.
-        - ridgeS (RidgeCV): The ridge regression model for the segmentation only model.
+        - ridgeSI: The ridge regression model for segmentation/identification - currently a dictionary. To be maade into a class
+        - ridgeS: The ridge regression model for the segmentation only model - currently a dictionary.
         - basis_args (ndarray): The fitted parameters for the basis set used in the SI model - either Laguerre or DOGS.
     """
     nEventTypes = srData["datasets"][0]["events"][event_types].shape[1]
@@ -788,6 +788,10 @@ def fit_seg_model(
             srData["datasets"][iSet]["events"]["pca_%s" % feature][
                 events[:, iEventType] == 1, iEventType * npcs : (iEventType + 1) * npcs
             ] = spect_pca_features[events[:, iEventType] == 1, :]
+    
+    # Clear some memory
+    all_spect_windows = None
+
 
     # 2. now fit the onsets with a convolutional kernel
     #       This removes the average response to onsets and offsets
@@ -823,9 +827,12 @@ def fit_seg_model(
     SegModel_ridge.fit(X.T, Y, sample_weight=Y_weights)
     learned_conv_kernel = SegModel_ridge.coef_.reshape(2, nPoints)
 
-    # 3. now fit the laguerre parameters to the convolutional kernel
-    print("Fitting laguerre or DOGS parameters")
+    # Clear some memory
+    X = None
+    Y = None
 
+    # 3. now fit the laguerre parameters to the convolutional kernel
+    print("Fitting laguerre or DOGS parameters using Ridge")
 
     def sum_n_laguerres(xt, *args):
         tau, alpha, *w = args
@@ -878,15 +885,83 @@ def fit_seg_model(
             basis_args[iEventType, :] = popt
 
     # 4. now fit the response to onsets and offsets using the features
-    Y_avg_removed = None
-    Y_weights = None
-    X = None
-    for iSet in pair_train_set:
+
+    # 4a. First calculate the weighted sums per pair_train_set to get average response and stim:
+    # Obrain the size of the feature space
+    feature_key= "pca_%s" % feature
+    pair = srData["datasets"][pair_train_set[0]]
+    feature = pair["events"][feature_key]
+    if feature.ndim == 1:
+        feature = feature[:, np.newaxis]
+    nFeatures = feature.shape[1]
+
+    nDOGS = 5
+    nSets = len(pair_train_set) 
+    if (nLaguerre > 0 ):
+        xavg = np.zeros((nSets,nLaguerre*nFeatures,1))
+    else:
+        xavg = np.zeros((nSets,nDOGS*nFeatures, 1))
+
+    count = np.zeros(nSets)
+    yavg = np.zeros(nSets)
+
+    # We are not going to store the feature matrix, x, but recalculate them to save RAM
+    for iS, iSet in enumerate(pair_train_set):
+        # Get the x and y
         pair = srData["datasets"][iSet]
         if (nLaguerre > 0 ):
             x = generate_laguerre_features(
                 pair,
-                feature_key="pca_%s" % feature,
+                feature_key=feature_key,
+                resp_key="psth_smooth",
+                laguerre_args=basis_args[:,0:2],
+                nLaguerrePoints=nPoints,
+                nLaguerre=nLaguerre
+            )
+        else:
+            x = generate_dogs_features(
+                pair,
+                feature_key=feature_key,
+                resp_key="psth_smooth",
+                dogs_args=basis_args,
+                nPoints=nPoints
+            )
+        
+
+        y = pair["resp"]["psth_smooth"]  
+        if "weights" not in pair["resp"]:
+            yw = np.ones_like(y)
+        else:
+            yw = pair["resp"]["weights"]
+
+        xavg[iS, :, :] = np.sum(x*yw.T, axis=1, keepdims=True)
+        count[iS] = np.sum(yw)
+        yavg[iS] = np.sum(y*yw)
+
+    # 4b. Calculate the leave one out average stimulus and average response
+    xsumAll = np.sum(xavg, axis=0, keepdims=True)
+    countAll = np.sum(count)
+    ysumAll = np.sum(yavg)
+    for iS in range(nSets):
+        xavg[iS,:,:] = (xsumAll - xavg[iS,:,:])/(countAll - count[iS])
+        yavg[iS] = (ysumAll - yavg[iS])/(countAll - count[iS])
+
+     
+    # 4c. Calculate auto-covariance and cross-covariance
+    nSets = len(pair_train_set) 
+    if (nLaguerre > 0 ):
+        Cxx = np.zeros((nSets,nLaguerre*nFeatures,nLaguerre*nFeatures))
+        Cxy = np.zeros((nSets,nLaguerre*nFeatures))
+    else:
+        Cxx = np.zeros((nSets,nDOGS*nFeatures, nDOGS*nFeatures)) 
+        Cxy = np.zeros((nSets,nLaguerre*nFeatures))
+   
+    for iS, iSet in enumerate(pair_train_set):
+        pair = srData["datasets"][iSet]
+        if (nLaguerre > 0 ):
+            x = generate_laguerre_features(
+                pair,
+                feature_key=feature_key,
                 resp_key="psth_smooth",
                 laguerre_args=basis_args[:,0:2],
                 nLaguerrePoints=nPoints,
@@ -895,7 +970,7 @@ def fit_seg_model(
         else:
             x = generate_dogs_features(
                 pair,
-                feature_key="pca_%s" % feature,
+                feature_key=feature_key,
                 resp_key="psth_smooth",
                 dogs_args=basis_args,
                 nPoints=nPoints,
@@ -906,27 +981,107 @@ def fit_seg_model(
             yw = np.ones_like(y)
         else:
             yw = pair["resp"]["weights"]
-        x = x[:, yw > 0]
-        y = y[yw > 0]
-        yw = yw[yw > 0]
-        if X is None:
-            X = x
-        else:
-            X = np.hstack([X, x])
-        if Y_avg_removed is None:
-            Y_avg_removed = y
-            Y_weights = yw
-        else:
-            Y_avg_removed = np.hstack([Y_avg_removed, y])
-            Y_weights = np.hstack([Y_weights, yw])
 
-    # 5. now fit the laguerre features to the response residual
-    print("Fit the laguerre convolved features to the response")
-    SIModel_ridge = RidgeCV()
-    SIModel_ridge.fit(X.T, Y_avg_removed, sample_weight=Y_weights)
+        x = x[:, yw > 0]
+
+        # Auto-Covariance and Cross-Covariances matrices, the square roots multiply to give a weight to the squares
+        Cxx[iS,:,:] = ((x-xavg[iS,:,:])*(np.sqrt(yw[yw>0])).T) @ ((x-xavg[iS,:,:])*(np.sqrt(yw[yw>0])).T).T
+        Cxy[iS,:] = ((x-xavg[iS,:,:])*(np.sqrt(yw[yw>0])).T) @ ((y-yavg[iS])*(np.sqrt(yw[yw>0])))
+
+    # 4d. Calculate the leave one out covariances and the norm of CXX
+    CxxAll = np.sum(Cxx, axis=0)
+    CxyAll = np.sum(Cxy, axis=0)
+    CxxNorm = np.zeros(nSets)
+    
+    for iS in range(nSets):
+        Cxx[iS,:,:] = (CxxAll - Cxx[iS,:,:])/(countAll - count[iS])
+        Cxy[iS,:] = (CxyAll - Cxy[iS,:])/(countAll - count[iS])
+        CxxNorm[iS] = np.linalg.norm(np.squeeze(Cxx[iS, :, :]))
+
+    ranktol = tol * np.max(CxxNorm)
+
+    # 5. Calculate the ridge regression by hand.
+
+    # 5a. Invert all auto-correlation matrices
+    u = np.zeros(Cxx.shape)
+    v = np.zeros(Cxx.shape)
+    s = np.zeros(Cxy.shape)     # This is just the diagonal
+    hJN = np.zeros(Cxy.shape)
+    nb = Cxx.shape[1]
+
+    for iS in range(nSets):
+        u[iS,:,:],s[iS,:],v[iS,:,:] = np.linalg.svd(Cxx[iS,:,:])
+
+    R2CV = np.zeros(ranktol.shape[0])
+    for it, tolval in enumerate(ranktol):
+        simple_sum_xy = 0
+        simple_sum_xx = 0
+        simple_sum_yy = 0
+        simple_sum_x =  0
+        simple_sum_y =  0
+        simple_sum_count = 0
+        for iS, iSet in enumerate(pair_train_set):
+
+            is_mat = np.zeros((nb, nb))
+            # ridge regression - regularized normal equation
+            for ii in range(nb):
+                is_mat[ii,ii] = 1.0/(s[iS, ii] + tolval)
+        
+            hJN[iS,:] = v[iS, :, :] @ is_mat @ (u[iS, :, :] @ Cxy[iS,:])
+
+            # Find x and actual y:
+            pair = srData["datasets"][iSet]
+            if (nLaguerre > 0 ):
+                x = generate_laguerre_features(
+                    pair,
+                    feature_key=feature_key,
+                    resp_key="psth_smooth",
+                    laguerre_args=basis_args[:,0:2],
+                    nLaguerrePoints=nPoints,
+                    nLaguerre=nLaguerre,
+                )
+            else:
+                x = generate_dogs_features(
+                    pair,
+                    feature_key=feature_key,
+                    resp_key="psth_smooth",
+                    dogs_args=basis_args,
+                    nPoints=nPoints
+                )
+            y = pair["resp"]["psth_smooth"] 
+            if "weights" not in pair["resp"]:
+                yw = np.ones_like(y)
+            else:
+                yw = pair["resp"]["weights"]
+          
+            # Get the prediciton
+            ypred = hJN[iS, :]@ (x - xavg[iS]) + yavg[iS]
+
+            # Get values to calculate R2-CV
+            sum_count = np.sum(yw)
+            sum_y = np.sum(y*yw)
+            sum_yy = np.sum(y*y*yw)
+            sum_yp = np.sum(ypred*yw)
+            sum_ypyp = np.sum(ypred*ypred*yw)
+            sum_yyp = np.sum(y*ypred*yw)
+
+            simple_sum_xy += sum_yyp
+            simple_sum_xx += sum_yy
+            simple_sum_yy += sum_ypyp
+            simple_sum_x +=  sum_y
+            simple_sum_y +=  sum_yp
+            simple_sum_count += sum_count
+        
+        x_mean = simple_sum_x/simple_sum_count
+        y_mean = simple_sum_y/simple_sum_count
+        R2CV[it] = (simple_sum_xy/simple_sum_count - x_mean*y_mean)**2/((simple_sum_xx/simple_sum_count - x_mean**2)*(simple_sum_yy/simple_sum_count - y_mean**2))
+
+    # Find the best tolerance level, i.e. the ridge penalty hyper-parameter
+    itMax = np.argmax(R2CV)
+    
 
     # 6. Return the ridge model for the residuals, the ridge model for the onsets, and the laguerre parameters
-    return pca, SIModel_ridge, SegModel_ridge, basis_args
+    return pca, R2CV, SegModel_ridge, basis_args
 
 
 # high level function
