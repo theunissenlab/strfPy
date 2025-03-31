@@ -435,6 +435,31 @@ def generate_prediction(
     y_pred[y_pred < 0] = 0
     return y_pred
 
+def generate_predictionV2(
+    pair, model, feature, basis_args, nPoints=200, nLaguerre=5
+):
+    if (nLaguerre > 0) :
+        x = generate_laguerre_features(
+        pair,
+        feature_key="pca_%s" % feature,
+        resp_key='psth_smooth',
+        laguerre_args=basis_args[:,0:2],
+        nLaguerrePoints=nPoints,
+        nLaguerre=nLaguerre,
+        )
+    else:
+        x = generate_dogs_features(
+        pair,
+        feature_key="pca_%s" % feature,
+        resp_key='psth_smooth',
+        dogs_args=basis_args,
+        nPoints=nPoints
+        )
+
+    y_pred = model['weights']@ x + model['bias']
+    y_pred[y_pred < 0] = 0
+    return y_pred
+
 
 def generate_pred_score(
     pair, ridge, feature, basis_args, ridge_conv_filter, nPoints=200, nLaguerre=5
@@ -731,7 +756,7 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
 
 
 def fit_seg_model(
-    srData, nLaguerre, nPoints, event_types, feature, pair_train_set=None, pca=None, tol = np.array([0.100, 0.050, 0.010, 0.005, 1e-03, 1e-04, 5e-05, 0])
+    srData, nLaguerre, nPoints, event_types, feature, pair_train_set=None, pca=None, tol = np.array([0.6, 0.5, 0.4, 0.2, 0.15, 0.100, 0.08, 0.050, 0.010, 0.005, 1e-03])
 ):
     """
     Fits a segmented model to the given data.
@@ -746,7 +771,7 @@ def fit_seg_model(
     Returns:
     tuple: A tuple containing:
         - pca (PCA): The fitted PCA object for the input features
-        - ridgeSI: The ridge regression model for segmentation/identification - currently a dictionary. To be maade into a class
+        - segIDModel: The ridge regression model for segmentation/identification - currently a dictionary. To be maade into a class
         - ridgeS: The ridge regression model for the segmentation only model - currently a dictionary.
         - basis_args (ndarray): The fitted parameters for the basis set used in the SI model - either Laguerre or DOGS.
     """
@@ -765,6 +790,7 @@ def fit_seg_model(
 
     if pair_train_set is None:
         pair_train_set = np.arange(pairCount)
+
 
     # 1. first use PCA to reduce dim of the features'
     print("Fitting PCA to Feature")
@@ -898,9 +924,12 @@ def fit_seg_model(
     nDOGS = 5
     nSets = len(pair_train_set) 
     if (nLaguerre > 0 ):
-        xavg = np.zeros((nSets,nLaguerre*nFeatures,1))
+        nD = nLaguerre
     else:
-        xavg = np.zeros((nSets,nDOGS*nFeatures, 1))
+        nD = nDOGS
+
+  
+    xavg = np.zeros((nSets,nD*nFeatures, 1))
 
     count = np.zeros(nSets)
     yavg = np.zeros(nSets)
@@ -949,13 +978,9 @@ def fit_seg_model(
      
     # 4c. Calculate auto-covariance and cross-covariance
     nSets = len(pair_train_set) 
-    if (nLaguerre > 0 ):
-        Cxx = np.zeros((nSets,nLaguerre*nFeatures,nLaguerre*nFeatures))
-        Cxy = np.zeros((nSets,nLaguerre*nFeatures))
-    else:
-        Cxx = np.zeros((nSets,nDOGS*nFeatures, nDOGS*nFeatures)) 
-        Cxy = np.zeros((nSets,nLaguerre*nFeatures))
-   
+    Cxx = np.zeros((nSets,nD*nFeatures,nD*nFeatures))
+    Cxy = np.zeros((nSets,nD*nFeatures))
+
     for iS, iSet in enumerate(pair_train_set):
         pair = srData["datasets"][iSet]
         if (nLaguerre > 0 ):
@@ -1013,13 +1038,14 @@ def fit_seg_model(
         u[iS,:,:],s[iS,:],v[iS,:,:] = np.linalg.svd(Cxx[iS,:,:])
 
     R2CV = np.zeros(ranktol.shape[0])
+
     for it, tolval in enumerate(ranktol):
-        simple_sum_xy = 0
-        simple_sum_xx = 0
+
         simple_sum_yy = 0
-        simple_sum_x =  0
         simple_sum_y =  0
+        simple_sum_error = 0
         simple_sum_count = 0
+
         for iS, iSet in enumerate(pair_train_set):
 
             is_mat = np.zeros((nb, nb))
@@ -1057,31 +1083,46 @@ def fit_seg_model(
             # Get the prediciton
             ypred = hJN[iS, :]@ (x - xavg[iS]) + yavg[iS]
 
-            # Get values to calculate R2-CV
+            # Get values to calculate R2-CV - here it is the coefficient of determination
             sum_count = np.sum(yw)
             sum_y = np.sum(y*yw)
             sum_yy = np.sum(y*y*yw)
-            sum_yp = np.sum(ypred*yw)
-            sum_ypyp = np.sum(ypred*ypred*yw)
-            sum_yyp = np.sum(y*ypred*yw)
+            sum_error2 = np.sum(((ypred-y)**2)*yw)
 
-            simple_sum_xy += sum_yyp
-            simple_sum_xx += sum_yy
-            simple_sum_yy += sum_ypyp
-            simple_sum_x +=  sum_y
-            simple_sum_y +=  sum_yp
+            simple_sum_yy += sum_yy
+            simple_sum_y +=  sum_y
+            simple_sum_error += sum_error2
             simple_sum_count += sum_count
         
-        x_mean = simple_sum_x/simple_sum_count
-        y_mean = simple_sum_y/simple_sum_count
-        R2CV[it] = (simple_sum_xy/simple_sum_count - x_mean*y_mean)**2/((simple_sum_xx/simple_sum_count - x_mean**2)*(simple_sum_yy/simple_sum_count - y_mean**2))
 
+        y_mean = simple_sum_y/simple_sum_count
+        y_var = simple_sum_yy/simple_sum_count - y_mean**2
+        y_error = simple_sum_error/simple_sum_count
+
+        # This is a "one-trial" CV
+        R2CV[it] = 1.0 - y_error/y_var
+     
     # Find the best tolerance level, i.e. the ridge penalty hyper-parameter
+    segIDModel = {}
     itMax = np.argmax(R2CV)
+    segIDModel['Tolerances'] = tol
+    segIDModel['BestITolInd'] = itMax
+    segIDModel['R2CV'] = R2CV
+
+    # Calculate one filter at the best tolerance
+    uAll,sAll,vAll = np.linalg.svd(CxxAll/countAll)
+    for ii in range(nb):
+        is_mat[ii,ii] = 1.0/(sAll[ii] + ranktol[itMax])
     
+    hJNAll = vAll @ is_mat @ (uAll @ (CxyAll/countAll))
+    # The bias term
+    b0 = hJNAll @ (xsumAll/countAll) + (ysumAll/countAll)
+    segIDModel['weights'] = hJNAll
+    segIDModel['bias'] = b0[0,0]
+
 
     # 6. Return the ridge model for the residuals, the ridge model for the onsets, and the laguerre parameters
-    return pca, R2CV, SegModel_ridge, basis_args
+    return pca, segIDModel, SegModel_ridge, basis_args
 
 
 # high level function
@@ -1091,7 +1132,6 @@ def process_unit(
     srData,
     feature="log_spect_windows",
     nPoints=200,
-    mult_values=False,
     nLaguerre=5,                          # Set to -1 to use DOGS and their derivatives
     pca=None,
     LOO=True,                             # LeaveOneOut (LOO) cross-validation. Set to False for speed and testing but you won't get cross-validation data
@@ -1105,7 +1145,7 @@ def process_unit(
 
     # First fit the full model with the entire data set
     pair_train_set = np.arange(pairCount)
-    pca, ridge, ridge_conv_filter, basis_args = fit_seg_model(
+    pca, segIDModel, ridge_conv_filter, basis_args = fit_seg_model(
         srData,
         nLaguerre,
         nPoints,
@@ -1144,32 +1184,11 @@ def process_unit(
     y_mean = simple_sum_y/simple_sum_count
     simple_r2_train = (simple_sum_xy/simple_sum_count - x_mean*y_mean)**2/((simple_sum_xx/simple_sum_count - x_mean**2)*(simple_sum_yy/simple_sum_count - y_mean**2))
 
-    # Get predictions and calculate the single R2 for segment + identification model called here all for the entire data set used for training and testing
-    all_sum_xy = 0
-    all_sum_xx = 0
-    all_sum_yy = 0
-    all_sum_x =  0
-    all_sum_y =  0
-    all_sum_count = 0
-    for iSet in pair_train_set:
-        if (ntrials[iSet] >= ntrialsR2) :
-            if (nLaguerre > 0):
-                sum_x, sum_xx, sum_y, sum_yy, sum_xy, sum_count = get_prediction_r2_Values( srData["datasets"][iSet], 
-                                                                ridge, feature, basis_args[:,0:2], ridge_conv_filter, nPoints, ntrialsR2, nLaguerre=nLaguerre)
-            else:
-                sum_x, sum_xx, sum_y, sum_yy, sum_xy, sum_count = get_prediction_r2_Values( srData["datasets"][iSet],
-                                                                ridge, feature, basis_args, ridge_conv_filter, nPoints, ntrialsR2, nLaguerre=nLaguerre)
-            all_sum_xy += sum_xy
-            all_sum_xx += sum_xx
-            all_sum_yy += sum_yy
-            all_sum_x +=  sum_x
-            all_sum_y +=  sum_y
-            all_sum_count += sum_count
-    x_mean = all_sum_x/all_sum_count
-    y_mean = all_sum_y/all_sum_count    
-    all_r2_train = (all_sum_xy/all_sum_count - x_mean*y_mean)**2/((all_sum_xx/all_sum_count - x_mean**2)*(all_sum_yy/all_sum_count - y_mean**2))
+     
+    all_r2_train = 0
+    all_r2_test = segIDModel['R2CV'][segIDModel['BestITolInd']]
     
-    
+    LOO = False
     if LOO:
     # Now do Leave One Out Cross-Validation (LOOCV)
         print('Starting cross-validation calculations')
@@ -1244,7 +1263,6 @@ def process_unit(
                 all_sum_count += sum_count
 
         # Now calculate R2 values
-        # R2Ceil = preprocSound.calculate_EV(srData, nPoints, mult_values)
         x_mean = simple_sum_x/simple_sum_count
         y_mean = simple_sum_y/simple_sum_count
         simple_r2_test = (simple_sum_xy/simple_sum_count - x_mean*y_mean)**2/((simple_sum_xx/simple_sum_count - x_mean**2)*(simple_sum_yy/simple_sum_count - y_mean**2))
@@ -1254,12 +1272,12 @@ def process_unit(
         all_r2_test = (all_sum_xy/all_sum_count - x_mean*y_mean)**2/((all_sum_xx/all_sum_count - x_mean**2)*(all_sum_yy/all_sum_count - y_mean**2))
     else:
         simple_r2_test = 0.0
-        all_r2_test = 0.0
+        # all_r2_test = 0.0
 
     return (
         srData,
         pca,
-        ridge,
+        segIDModel,
         ridge_conv_filter,
         basis_args,
         [
