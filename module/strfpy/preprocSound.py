@@ -5,7 +5,7 @@ from scipy.io import loadmat
 from scipy.signal import convolve, windows
 
 #sys.path.append("/Users/frederictheunissen/Code/crcns-kailin/module")
-from module.strfpy.timeFreq import timefreq, timefreq_raw
+from .timeFreq import timefreq, timefreq_raw
 import pandas as pd
 import pynwb as nwb
 
