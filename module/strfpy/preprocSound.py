@@ -648,7 +648,7 @@ def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft'
         # now we group them by stimulus and preprocess them
         srData = {}
         datasets = []
-        max_stim_amp = 0.0
+        max_stim_amp = -999
         max_resp_len = -1     # Stimulus-response length is number of points
         n_stim_channels = -1
         for stim_name, stim_df in all_trials.groupby('stimuli_name'):
@@ -682,7 +682,10 @@ def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft'
                 if (n_stim_channels != stim['nStimChannels']):
                     print('Error: number of spatial (frequency) channels does not match across stimuli')
 
-            max_stim_amp = np.max((max_stim_amp, stim['maxStimAmp']))
+            if max_stim_amp == -999:
+                max_stim_amp = stim['maxStimAmp']
+            else:
+                max_stim_amp = np.max((max_stim_amp, stim['maxStimAmp']))
 
             # preprocess the response by loading the individual responses and calculating the psth
             
@@ -782,7 +785,7 @@ def preprocess_sound_nwb_singletrial(nwb_file, intervals_name, unit_id, preproce
         # now we group them by stimulus and preprocess them
         srData = {}
         datasets = []
-        max_stim_amp = 0.0
+        max_stim_amp = -999
         max_resp_len = -1     # Stimulus-response length is number of points
         n_stim_channels = -1
         for stim_name, stim_df in all_trials.groupby('stimuli_name'):
@@ -815,8 +818,10 @@ def preprocess_sound_nwb_singletrial(nwb_file, intervals_name, unit_id, preproce
             else:
                 if (n_stim_channels != stim['nStimChannels']):
                     print('Error: number of spatial (frequency) channels does not match across stimuli')
-
-            max_stim_amp = np.max((max_stim_amp, stim['maxStimAmp']))
+            if max_stim_amp == -999:
+                max_stim_amp = stim['maxStimAmp']
+            else:
+                max_stim_amp = np.max((max_stim_amp, stim['maxStimAmp']))
 
             # preprocess the response by loading the individual responses and calculating the psth
             
@@ -1088,7 +1093,7 @@ def preprocess_sound(raw_stim_files, raw_resp_files, preprocess_type='ft', stim_
     n_stim_channels = -1
     stim_sample_rate = 1000.0
     resp_sample_rate = 1000.0
-    max_stim_amp = 0.0
+    max_stim_amp = -999
     DBNOISE = 80.0
     pair_count = len(raw_stim_files)
     srData = {}
@@ -1135,7 +1140,10 @@ def preprocess_sound(raw_stim_files, raw_resp_files, preprocess_type='ft', stim_
             if (n_stim_channels != stim['nStimChannels']):
                 print('Error: number of spatial (frequency) channels does not match across stimuli')
 
-        max_stim_amp = np.max((max_stim_amp, stim['maxStimAmp']))
+        if max_stim_amp == -999:
+            max_stim_amp = stim['maxStimAmp']
+        else:
+            max_stim_amp = np.max((max_stim_amp, stim['maxStimAmp']))
         max_stim_len = np.max((max_stim_len, stim['stimLength']))
 
         # preprocess response

@@ -435,10 +435,22 @@ def generate_prediction(
     y_pred[y_pred < 0] = 0
     return y_pred
 
-def generate_predictionV2(
-    pair, model, feature, basis_args, nPoints=200, nLaguerre=5
-):
-    if (nLaguerre > 0) :
+def generate_x(pair, feature, basis_args = None, xGen = 'Kernel', nPoints=200, nLaguerre=5):
+    # xGen is a string determining which x matrix to generate: Must be "Kernel", "LG", or "DG"
+    # "Kernel" is a time-varying impulse function at events for segmentation
+    # "LG" is Laguerre Polynomials
+    # "DG" is difference of Guassians
+
+    if xGen == 'Kernel':
+        x = arbitrary_kernel(
+        pair,
+        nPoints=nPoints,
+        event_key=feature,
+        event_index_key="index",
+        resp_key="psth",
+        mult_values=False,
+    )
+    elif xGen == 'LG':
         x = generate_laguerre_features(
         pair,
         feature_key="pca_%s" % feature,
@@ -447,7 +459,7 @@ def generate_predictionV2(
         nLaguerrePoints=nPoints,
         nLaguerre=nLaguerre,
         )
-    else:
+    elif xGen == 'DG':
         x = generate_dogs_features(
         pair,
         feature_key="pca_%s" % feature,
@@ -455,8 +467,24 @@ def generate_predictionV2(
         dogs_args=basis_args,
         nPoints=nPoints
         )
+    else:
+        print('Non valid key word for stimulus generation')
+        x = None
 
+    return x
+
+
+
+def generate_predictionV2 (pair, model, feature, basis_args=None, xGen = 'Kernel', nPoints=200, nLaguerre=5):
+
+    # xGen is the model used for generating the x matrix
+    x = generate_x(pair, feature, basis_args = basis_args, xGen = xGen, nPoints=nPoints, nLaguerre=nLaguerre)
+
+    # The Linear model
     y_pred = model['weights']@ x + model['bias']
+    # This should give the same result
+    # y_pred2 = model['weights']@ (x-model['xavg']) + model['yavg']
+                                 
     y_pred[y_pred < 0] = 0
     return y_pred
 
@@ -514,7 +542,7 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
     # ampThresh = 20.0  # Threshold in dB where 50 is max
 
     minSound = 25  # Minimum distance between peaks or troffs
-    derivativeThresh = 0.2  # Threshold derivative 0.5 dB per ms.
+    derivativeThresh = 0.5  # Threshold derivative 0.5 dB per ms.
     # segmentBuffer = 30 # Number of points on each side of segment for response and MPS - time units given by stim sample rate
     # respChunkLen = 150 # Total chunk length (including segment buffer) in number of points
     # DBNOISE = 50  # Set a baseline for everything below 50 dB from max - done in preprocSound
@@ -778,29 +806,35 @@ def fit_seg_model(
     nEventTypes = srData["datasets"][0]["events"][event_types].shape[1]
     nfeats = srData["datasets"][0]["events"]["%s_nfeats" % feature]
     pairCount = len(srData["datasets"])
-    all_spect_windows = np.concatenate(
-        [
-            np.asarray(srData["datasets"][iSet]["events"][feature]).reshape(
-                (len(srData["datasets"][iSet]["events"]["index"]), nfeats)
-            )
-            for iSet in range(pairCount)
-        ],
-        axis=0,
-    )
+
 
     if pair_train_set is None:
         pair_train_set = np.arange(pairCount)
+
+    nSets = len(pair_train_set) 
 
 
     # 1. first use PCA to reduce dim of the features'
     print("Fitting PCA to Feature")
     if pca is None:
         npcs = 20
+        all_spect_windows = np.concatenate(
+            [
+                np.asarray(srData["datasets"][iSet]["events"][feature]).reshape(
+                    (len(srData["datasets"][iSet]["events"]["index"]), nfeats)
+                )
+                for iSet in range(pairCount)
+            ],
+            axis=0,
+        )
         pca = PCA(n_components=npcs)
         pca.fit(all_spect_windows)
+            # Clear some memory
+        all_spect_windows = None
     else:
         npcs = pca.n_components_
 
+    # This pca transform might not be needed?  Maybe it is stored?
     for iSet in range(pairCount):
         events = srData["datasets"][iSet]["events"][event_types]
         n_events = len(srData["datasets"][iSet]["events"]["index"])
@@ -815,20 +849,19 @@ def fit_seg_model(
                 events[:, iEventType] == 1, iEventType * npcs : (iEventType + 1) * npcs
             ] = spect_pca_features[events[:, iEventType] == 1, :]
     
-    # Clear some memory
-    all_spect_windows = None
 
 
     # 2. now fit the onsets with a convolutional kernel
     #       This removes the average response to onsets and offsets
     print("Fitting convolutional kernel")
-    X = None
-    Y = None
-    Y_weights = None
+    xavg = np.zeros((nSets,nPoints*2, 1))
+    count = np.zeros(nSets)
+    yavg = np.zeros(nSets)
 
-    for iSet in pair_train_set:
+    for iS, iSet in enumerate(pair_train_set):
         pair = srData["datasets"][iSet]
-        x = arbitrary_kernel(pair, nPoints=nPoints)
+        x = generate_x(pair, feature = 'onoff_feature', xGen = 'Kernel', nPoints=nPoints)
+
         if "weights" not in pair["resp"]:
             yw = np.ones_like(pair["resp"]["psth_smooth"])
         else:
@@ -837,25 +870,150 @@ def fit_seg_model(
         x = x[:, yw > 0]
         y = y[yw > 0]
         yw = yw[yw > 0]
-        # yw = yw / np.max(yw)
-        if X is None:
-            X = x
-        else:
-            X = np.hstack([X, x])
-        if Y is None:
-            Y = y
-            Y_weights = yw
-        else:
-            Y = np.hstack([Y, y])
-            Y_weights = np.hstack([Y_weights, yw])
 
-    SegModel_ridge = RidgeCV()
-    SegModel_ridge.fit(X.T, Y, sample_weight=Y_weights)
-    learned_conv_kernel = SegModel_ridge.coef_.reshape(2, nPoints)
+        xavg[iS, :, :] = np.sum(x*yw.T, axis=1, keepdims=True)
+        count[iS] = np.sum(yw)
+        yavg[iS] = np.sum(y*yw)
 
-    # Clear some memory
-    X = None
-    Y = None
+    # 2b. Calculate the leave one out average stimulus and average response
+    xsumAll = np.sum(xavg, axis=0, keepdims=True)
+    countAll = np.sum(count)
+    ysumAll = np.sum(yavg)
+
+    for iS in range(nSets):
+        xavg[iS,:,:] = (xsumAll - xavg[iS,:,:])/(countAll - count[iS])
+        yavg[iS] = (ysumAll - yavg[iS])/(countAll - count[iS])
+
+     
+    # 2c. Calculate auto-covariance and cross-covariance
+    
+    Cxx = np.zeros((nSets,nPoints*2,nPoints*2))
+    Cxy = np.zeros((nSets,nPoints*2))
+
+    for iS, iSet in enumerate(pair_train_set):
+        pair = srData["datasets"][iSet]
+        x = generate_x(pair, feature = 'onoff_feature', xGen = 'Kernel', nPoints=nPoints)
+        y = pair["resp"]["psth_smooth"]  
+        if "weights" not in pair["resp"]:
+            yw = np.ones_like(y)
+        else:
+            yw = pair["resp"]["weights"]
+
+        x = x[:, yw > 0]
+        y = y[yw > 0]
+        yw = yw[yw > 0]
+
+        # Auto-Covariance and Cross-Covariances matrices, the square roots multiply to give a weight to the squares
+        Cxx[iS,:,:] = ((x-xavg[iS,:,:])*(np.sqrt(yw[yw>0])).T) @ ((x-xavg[iS,:,:])*(np.sqrt(yw[yw>0])).T).T
+        Cxy[iS,:] = ((x-xavg[iS,:,:])*(np.sqrt(yw[yw>0])).T) @ ((y-yavg[iS])*(np.sqrt(yw[yw>0])))
+
+    # 2d. Calculate the leave one out covariances and the norm of CXX
+    CxxAll = np.sum(Cxx, axis=0)
+    CxyAll = np.sum(Cxy, axis=0)
+    CxxNorm = np.zeros(nSets)
+    
+    for iS in range(nSets):
+        Cxx[iS,:,:] = (CxxAll - Cxx[iS,:,:])/(countAll - count[iS])
+        Cxy[iS,:] = (CxyAll - Cxy[iS,:])/(countAll - count[iS])
+        CxxNorm[iS] = np.linalg.norm(np.squeeze(Cxx[iS, :, :]))
+
+    ranktol = tol * np.max(CxxNorm)
+
+    # 3. Calculate the ridge regression by hand.
+
+    # 3a. Invert all auto-correlation matrices
+    u = np.zeros(Cxx.shape)
+    v = np.zeros(Cxx.shape)
+    s = np.zeros(Cxy.shape)     # This is just the diagonal
+    hJN = np.zeros(Cxy.shape)
+    nb = Cxx.shape[1]
+
+    for iS in range(nSets):
+        u[iS,:,:],s[iS,:],v[iS,:,:] = np.linalg.svd(Cxx[iS,:,:])
+
+    R2CV = np.zeros(ranktol.shape[0])
+
+    for it, tolval in enumerate(ranktol):
+
+        simple_sum_yy = 0
+        simple_sum_y =  0
+        simple_sum_error = 0
+        simple_sum_count = 0
+
+        for iS, iSet in enumerate(pair_train_set):
+
+            is_mat = np.zeros((nb, nb))
+            # ridge regression - regularized normal equation
+            for ii in range(nb):
+                is_mat[ii,ii] = 1.0/(s[iS, ii] + tolval)
+        
+            hJN[iS,:] = v[iS, :, :] @ is_mat @ (u[iS, :, :] @ Cxy[iS,:])
+
+            # Find x and actual y:
+            pair = srData["datasets"][iSet]
+            x = generate_x(pair, feature = 'onoff_feature', xGen = 'Kernel', nPoints=nPoints)
+
+            y = pair["resp"]["psth_smooth"] 
+            if "weights" not in pair["resp"]:
+                yw = np.ones_like(y)
+            else:
+                yw = pair["resp"]["weights"]
+
+            x = x[:, yw > 0]
+            y = y[yw > 0]
+            yw = yw[yw > 0]
+          
+            # Get the prediciton
+            ypred = hJN[iS, :]@ (x - xavg[iS]) + yavg[iS]
+
+            # Get values to calculate R2-CV - here it is the coefficient of determination
+            sum_count = np.sum(yw)
+            sum_y = np.sum(y*yw)
+            sum_yy = np.sum(y*y*yw)
+            sum_error2 = np.sum(((ypred-y)**2)*yw)
+
+            simple_sum_yy += sum_yy
+            simple_sum_y +=  sum_y
+            simple_sum_error += sum_error2
+            simple_sum_count += sum_count
+        
+
+        y_mean = simple_sum_y/simple_sum_count
+        y_var = simple_sum_yy/simple_sum_count - y_mean**2
+        y_error = simple_sum_error/simple_sum_count
+
+        # This is a "one-trial" CV
+        R2CV[it] = 1.0 - y_error/y_var
+    
+    # Find the best tolerance level, i.e. the ridge penalty hyper-parameter
+    segModel = {}
+    itMax = np.argmax(R2CV)
+    segModel['Tolerances'] = tol
+    segModel['BestITolInd'] = itMax
+    segModel['R2CV'] = R2CV
+
+    # Calculate one filter at the best tolerance
+    uAll,sAll,vAll = np.linalg.svd(CxxAll/countAll)
+    
+    is_mat = np.zeros((nb, nb))
+    for ii in range(nb):
+        is_mat[ii,ii] = 1.0/(sAll[ii] + ranktol[itMax])
+    
+    hJNAll = vAll @ is_mat @ (uAll @ (CxyAll/countAll))
+    # The bias term
+    b0 = -hJNAll @ (xsumAll/countAll) + (ysumAll/countAll)
+    segModel['weights'] = hJNAll
+    segModel['bias'] = b0[0,0]
+    segModel['xavg'] = xsumAll/countAll
+    segModel['yavg'] = ysumAll/countAll
+    learned_conv_kernel = hJNAll.reshape(2, nPoints)
+
+    # This is how we used to do it, using the sicikit learn ridge
+    #SegModel_ridge = RidgeCV()
+    #SegModel_ridge.fit(X.T, Y, sample_weight=Y_weights)
+    # learned_conv_kernel = SegModel_ridge.coef_.reshape(2, nPoints)
+
+
 
     # 3. now fit the laguerre parameters to the convolutional kernel
     print("Fitting laguerre or DOGS parameters using Ridge")
@@ -916,10 +1074,10 @@ def fit_seg_model(
     # Obrain the size of the feature space
     feature_key= "pca_%s" % feature
     pair = srData["datasets"][pair_train_set[0]]
-    feature = pair["events"][feature_key]
-    if feature.ndim == 1:
-        feature = feature[:, np.newaxis]
-    nFeatures = feature.shape[1]
+    x = pair["events"][feature_key]
+    if x.ndim == 1:
+        x = x[:, np.newaxis]
+    nFeatures = x.shape[1]
 
     nDOGS = 5
     nSets = len(pair_train_set) 
@@ -939,29 +1097,26 @@ def fit_seg_model(
         # Get the x and y
         pair = srData["datasets"][iSet]
         if (nLaguerre > 0 ):
-            x = generate_laguerre_features(
-                pair,
-                feature_key=feature_key,
-                resp_key="psth_smooth",
-                laguerre_args=basis_args[:,0:2],
-                nLaguerrePoints=nPoints,
-                nLaguerre=nLaguerre
-            )
+            x = generate_x(pair, feature, basis_args = basis_args, xGen = 'LG', nPoints=nPoints, nLaguerre=nLaguerre)
         else:
-            x = generate_dogs_features(
-                pair,
-                feature_key=feature_key,
-                resp_key="psth_smooth",
-                dogs_args=basis_args,
-                nPoints=nPoints
-            )
-        
+            x = generate_x(pair, feature, basis_args = basis_args, xGen = 'DG', nPoints=nPoints)
 
         y = pair["resp"]["psth_smooth"]  
         if "weights" not in pair["resp"]:
             yw = np.ones_like(y)
         else:
             yw = pair["resp"]["weights"]
+
+        # Eliminate stimulus with no data - this is not needed but should make smaller x and y
+        x = x[:, yw > 0]
+        y = y[yw > 0]
+        
+
+        # subract result from segmented model
+        xs = generate_x(pair, feature = 'onoff_feature', xGen = 'Kernel', nPoints=nPoints)
+        ys_pred = segModel['weights']@ xs[:, yw > 0] + segModel['bias']
+        y = y-ys_pred
+        yw = yw[yw > 0]
 
         xavg[iS, :, :] = np.sum(x*yw.T, axis=1, keepdims=True)
         count[iS] = np.sum(yw)
@@ -982,24 +1137,11 @@ def fit_seg_model(
     Cxy = np.zeros((nSets,nD*nFeatures))
 
     for iS, iSet in enumerate(pair_train_set):
-        pair = srData["datasets"][iSet]
+        pair = srData["datasets"][iSet]       
         if (nLaguerre > 0 ):
-            x = generate_laguerre_features(
-                pair,
-                feature_key=feature_key,
-                resp_key="psth_smooth",
-                laguerre_args=basis_args[:,0:2],
-                nLaguerrePoints=nPoints,
-                nLaguerre=nLaguerre,
-            )
+            x = generate_x(pair, feature, basis_args = basis_args, xGen = 'LG', nPoints=nPoints, nLaguerre=nLaguerre)
         else:
-            x = generate_dogs_features(
-                pair,
-                feature_key=feature_key,
-                resp_key="psth_smooth",
-                dogs_args=basis_args,
-                nPoints=nPoints,
-            )
+            x = generate_x(pair, feature, basis_args = basis_args, xGen = 'DG', nPoints=nPoints)
 
         y = pair["resp"]["psth_smooth"]  
         if "weights" not in pair["resp"]:
@@ -1008,6 +1150,14 @@ def fit_seg_model(
             yw = pair["resp"]["weights"]
 
         x = x[:, yw > 0]
+        y = y[yw > 0]
+        
+
+        # subract result from segmented model
+        xs = generate_x(pair, feature = 'onoff_feature', xGen = 'Kernel', nPoints=nPoints)
+        ys_pred = segModel['weights']@ xs[:, yw>0] + segModel['bias']
+        y = y-ys_pred
+        yw = yw[yw > 0]
 
         # Auto-Covariance and Cross-Covariances matrices, the square roots multiply to give a weight to the squares
         Cxx[iS,:,:] = ((x-xavg[iS,:,:])*(np.sqrt(yw[yw>0])).T) @ ((x-xavg[iS,:,:])*(np.sqrt(yw[yw>0])).T).T
@@ -1058,30 +1208,26 @@ def fit_seg_model(
             # Find x and actual y:
             pair = srData["datasets"][iSet]
             if (nLaguerre > 0 ):
-                x = generate_laguerre_features(
-                    pair,
-                    feature_key=feature_key,
-                    resp_key="psth_smooth",
-                    laguerre_args=basis_args[:,0:2],
-                    nLaguerrePoints=nPoints,
-                    nLaguerre=nLaguerre,
-                )
+                x = generate_x(pair, feature, basis_args = basis_args, xGen = 'LG', nPoints=nPoints, nLaguerre=nLaguerre)
             else:
-                x = generate_dogs_features(
-                    pair,
-                    feature_key=feature_key,
-                    resp_key="psth_smooth",
-                    dogs_args=basis_args,
-                    nPoints=nPoints
-                )
+                x = generate_x(pair, feature, basis_args = basis_args, xGen = 'DG', nPoints=nPoints)
             y = pair["resp"]["psth_smooth"] 
             if "weights" not in pair["resp"]:
                 yw = np.ones_like(y)
             else:
                 yw = pair["resp"]["weights"]
-          
+
+            x = x[:, yw > 0]
+            y = y[yw > 0]
+    
             # Get the prediciton
             ypred = hJN[iS, :]@ (x - xavg[iS]) + yavg[iS]
+
+            # add the contribution from segmented model
+            xs = generate_x(pair, feature = 'onoff_feature', xGen = 'Kernel', nPoints=nPoints)
+            ys_pred = segModel['weights']@ xs[:, yw>0] + segModel['bias']
+            ypred += ys_pred
+            yw = yw[yw > 0]
 
             # Get values to calculate R2-CV - here it is the coefficient of determination
             sum_count = np.sum(yw)
@@ -1116,13 +1262,15 @@ def fit_seg_model(
     
     hJNAll = vAll @ is_mat @ (uAll @ (CxyAll/countAll))
     # The bias term
-    b0 = hJNAll @ (xsumAll/countAll) + (ysumAll/countAll)
+    b0 = -hJNAll @ (xsumAll/countAll) + (ysumAll/countAll)
     segIDModel['weights'] = hJNAll
     segIDModel['bias'] = b0[0,0]
+    segIDModel['yavg'] = ysumAll/countAll
+    segIDModel['xavg'] = xsumAll/countAll
 
 
     # 6. Return the ridge model for the residuals, the ridge model for the onsets, and the laguerre parameters
-    return pca, segIDModel, SegModel_ridge, basis_args
+    return pca, segIDModel, segModel, basis_args
 
 
 # high level function
@@ -1145,7 +1293,7 @@ def process_unit(
 
     # First fit the full model with the entire data set
     pair_train_set = np.arange(pairCount)
-    pca, segIDModel, ridge_conv_filter, basis_args = fit_seg_model(
+    pca, segIDModel, segModel, basis_args = fit_seg_model(
         srData,
         nLaguerre,
         nPoints,
@@ -1156,7 +1304,7 @@ def process_unit(
     )
 
     # Get predictions and calculate the single R2 for segment only model called here simple for the entire data set used for training and testing
-    simple_sum_xy = 0
+    """     simple_sum_xy = 0
     simple_sum_xx = 0
     simple_sum_yy = 0
     simple_sum_x =  0
@@ -1184,7 +1332,10 @@ def process_unit(
     y_mean = simple_sum_y/simple_sum_count
     simple_r2_train = (simple_sum_xy/simple_sum_count - x_mean*y_mean)**2/((simple_sum_xx/simple_sum_count - x_mean**2)*(simple_sum_yy/simple_sum_count - y_mean**2))
 
-     
+    """   
+    ntrialsR2 = 1
+    simple_r2_train = 0
+    simple_r2_test =  segModel['R2CV'][segModel['BestITolInd']]
     all_r2_train = 0
     all_r2_test = segIDModel['R2CV'][segIDModel['BestITolInd']]
     
@@ -1270,15 +1421,12 @@ def process_unit(
         x_mean = all_sum_x/all_sum_count
         y_mean = all_sum_y/all_sum_count    
         all_r2_test = (all_sum_xy/all_sum_count - x_mean*y_mean)**2/((all_sum_xx/all_sum_count - x_mean**2)*(all_sum_yy/all_sum_count - y_mean**2))
-    else:
-        simple_r2_test = 0.0
-        # all_r2_test = 0.0
 
     return (
         srData,
         pca,
         segIDModel,
-        ridge_conv_filter,
+        segModel,
         basis_args,
         [
             simple_r2_train,
