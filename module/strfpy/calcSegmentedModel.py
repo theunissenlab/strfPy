@@ -165,6 +165,70 @@ def arbitrary_kernel(
     X = fftconvolve(X, kern_mat, axes=1, mode="full")[:, :nT]
     return X
 
+
+def fit_kernel_LG (learned_conv_kernel, nPoints, nD=2):
+    '''
+    Fits an arbitray funcntion of nPoints with a Laguerre function expansion'''
+
+    
+    def sum_n_laguerres(xt, *args):
+        tau, alpha, *w = args
+        nL = len(w)
+        out = np.zeros_like(xt, dtype=float)
+        for iL in range(nL):
+            out += w[iL] * laguerre(xt, 1.0, tau, alpha, xorder=iL) 
+        return out
+
+    nLG = 7   # Fiting tau, alpha and five amplitudes for 5 LG
+    basis_args = np.zeros((nD, nLG))
+    for iEventType in range(nD):
+        popt, pcov = curve_fit(
+            sum_n_laguerres,
+            np.arange(nPoints),
+            learned_conv_kernel[iEventType, :]-np.mean(learned_conv_kernel[iEventType, :]),
+            p0=[15, 5, 1, 1, 1, 1, 1],
+            bounds=(
+                [0, 0, -np.inf, -np.inf, -np.inf, -np.inf, -np.inf],
+                [np.inf, np.inf, np.inf, np.inf, np.inf, np.inf, np.inf],
+                ),
+                method="trf",
+        )
+        basis_args[iEventType, :] = popt
+
+    return basis_args
+
+def fit_kernel_DG(learned_conv_kernel, nPoints, nD=2):
+
+    '''
+    Fits an arbitray funcntion of nPoints with a difference of Guassian function expansion'''
+
+    basis_args = np.zeros((nD, 7))
+
+    # Find starting points - the bound might be too restrictive...
+    for iEventType in range(nD):
+        meanVal = np.mean(learned_conv_kernel[iEventType, :])
+        ampPos = np.max(learned_conv_kernel[iEventType, :])-meanVal
+        tPos = np.argmax(learned_conv_kernel[iEventType, :])
+        ampNeg = np.abs(np.min(learned_conv_kernel[iEventType, :])-meanVal)
+        tNeg = np.argmin(learned_conv_kernel[iEventType, :])
+        sdPos = sdNeg = 20
+        p0=[meanVal, ampPos, ampNeg, tPos, tNeg, sdPos, sdNeg]
+        popt, pcov = curve_fit(
+            dogs,
+            np.arange(nPoints),
+            learned_conv_kernel[iEventType, :]-np.mean(learned_conv_kernel[iEventType, :]),
+            p0=p0,
+            bounds=(
+            [np.min(learned_conv_kernel[iEventType, :]), 0, 0, 0, 0, 0, 0],
+            [np.max(learned_conv_kernel[iEventType, :]), np.inf, np.inf, nPoints, nPoints, nPoints, nPoints],
+            ),
+            method="trf",
+        )
+        basis_args[iEventType, :] = popt
+
+    return basis_args
+
+
 def generate_dogs_features(
     pair,
     feature_key,
@@ -779,11 +843,249 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
             srData["datasets"][iSet]["events"]["mps_windows"] - mean_mps
         )
 
+def nearDiagInv(diagA, u, s, v, tol=0):
+    ''' Calculates the regularized inverse of a near diagonal matrix, decomposed into its diagonal element and an SVD of its off-diagonal terms
+    diag A: The diagonal componnent of the diagonal matrix in its full matrix form
+    u, s, v: The singular value decomposition of the offdiagonal terms
+    tol: The regularization parameter
+    '''
+    
+    # The dimensionality of square matrices - could check for dimensions here
+    nDim = diagA.shape[0]
+
+    # Initialize the inverse
+    Ainv = np.diag(1/np.diag(diagA))
+    uc = u@np.diag((s))
+
+    # Calculate the inverse by iteration using the Sherman-Morisson formula
+    for ie in range(nDim):
+        ue = np.reshape(uc[:,ie], (uc.shape[0], 1))
+        ve = np.reshape(v[ie,:], (1, v.shape[1]))
+        Ainv = Ainv - (s[ie]/(s[ie]+tol)) * (Ainv @ ue @ ve @ Ainv)/(1+ve@Ainv@ue)
+
+    return Ainv
 
 # fitting funcitons
+def fit_seg(
+    srData, nPoints, x_feature, y_feature = 'psth_smooth', kernel = 'Kernel', basis_args = [], nD=2, pair_train_set=None, tol = np.array([0.6, 0.5, 0.4, 0.2, 0.15, 0.100, 0.08, 0.050, 0.010, 0.005, 1e-03])
+):
+    """
+    Fits a segmented model to the given data using ridge regresseion and leave one out cross-validation
+    Parameters:
+    srData (dict): The dataset containing events and responses.
+    nPoints (int): The number of points for the convolutional Kernel.
+    event_types (str): The type of events that define the segmentation
+    feature (str): The feature to use. If a pca is used this field will be pca_feature
+    kernel (str): a string specifying the kernel type.  Options are 'Kernel', 'LG', 'DG'.
+                'Kernel' : arbitrary impulse function
+                'DG' : difference of gaussians convolutional kernel
+                'LG' : Laguerre polynomials convolutional kernel
+    basis_args: arguments for the DG or LG kernels
+    nD (int): The number of kernel functions for the convolutional models. 2 is the number for 'kernel', 5 is the number for 'DG' and 20 is a good option for 'LG' kernel.
+    pair_train_set (list): List of dataset indices to use for training.
+    tol: the ridge hyperparameter expressed as a scale of the stimulus auto-correlation 
+    Returns:
+        segMpdel: The ridge regression model for segmentation/identification - currently a dictionary. To be maade into a class
+    """
 
 
-def fit_seg_model(
+    # If a training subset is not defined use the entire data set
+    if pair_train_set is None:
+        nSets = len(srData["datasets"])
+        pair_train_set = np.arange(nSets)
+    else:
+        nSets = len(pair_train_set) 
+
+    # Find the dimensionality of the x feature space.  For kernel it is just the number of points
+    if kernel == 'Kernel':
+        nFeatures = nPoints
+    else:
+        pair = srData["datasets"][pair_train_set[0]]
+        x = pair["events"][x_feature]
+        if x.ndim == 1:
+            x = x[:, np.newaxis]
+        nFeatures = x.shape[1]
+  
+    # 1. Calculate the averages to zero out data
+    xavg = np.zeros((nSets,nD*nFeatures, 1))
+    count = np.zeros(nSets)
+    yavg = np.zeros(nSets)
+
+    # We are not going to store the feature matrix, x, but recalculate them to save RAM
+    for iS, iSet in enumerate(pair_train_set):
+        # Get the x and y
+        pair = srData["datasets"][iSet]
+        x = generate_x(pair, x_feature, basis_args = basis_args, xGen = kernel, nPoints=nPoints, nLaguerre=nD)
+
+        y = pair["resp"][y_feature]  
+        if "weights" not in pair["resp"]:
+            yw = np.ones_like(y)
+        else:
+            yw = pair["resp"]["weights"]
+
+        # Eliminate entres with zero weight - this is not needed but should make smaller x and y
+        x = x[:, yw > 0]
+        y = y[yw > 0]
+        yw = yw[yw > 0]
+
+        xavg[iS, :, :] = np.sum(x*yw.T, axis=1, keepdims=True)
+        count[iS] = np.sum(yw)
+        yavg[iS] = np.sum(y*yw)
+
+    # 2 Calculate the leave one out average X and average Y
+    xsumAll = np.sum(xavg, axis=0, keepdims=True)
+    countAll = np.sum(count)
+    ysumAll = np.sum(yavg)
+    for iS in range(nSets):
+        xavg[iS,:,:] = (xsumAll - xavg[iS,:,:])/(countAll - count[iS])
+        yavg[iS] = (ysumAll - yavg[iS])/(countAll - count[iS])
+
+     
+    # 3 Calculate the leave one out auto-covariance (XX.t) and cross-covariance (XY), and the norm of XX.t
+    Cxx = np.zeros((nSets,nD*nFeatures,nD*nFeatures))
+    Cxy = np.zeros((nSets,nD*nFeatures))
+
+    for iS, iSet in enumerate(pair_train_set):
+        pair = srData["datasets"][iSet] 
+        x = generate_x(pair, x_feature, basis_args = basis_args, xGen = kernel, nPoints=nPoints, nLaguerre=nD)      
+        y = pair["resp"][y_feature]  
+        if "weights" not in pair["resp"]:
+            yw = np.ones_like(y)
+        else:
+            yw = pair["resp"]["weights"]
+        x = x[:, yw > 0]
+        y = y[yw > 0]
+        yw = yw[yw>0]
+        
+        # Auto-Covariance and Cross-Covariances matrices, the square roots multiply to give a weight to the squares
+        Cxx[iS,:,:] = ((x-xavg[iS,:,:])*(np.sqrt(yw)).T) @ ((x-xavg[iS,:,:])*(np.sqrt(yw)).T).T
+        Cxy[iS,:] = ((x-xavg[iS,:,:])*(np.sqrt(yw)).T) @ ((y-yavg[iS])*(np.sqrt(yw)))
+
+    CxxAll = np.sum(Cxx, axis=0)
+    CxyAll = np.sum(Cxy, axis=0)
+    CxxNorm = np.zeros(nSets)
+    
+    for iS in range(nSets):
+        Cxx[iS,:,:] = (CxxAll - Cxx[iS,:,:])/(countAll - count[iS])
+        Cxy[iS,:] = (CxyAll - Cxy[iS,:])/(countAll - count[iS])
+        if (kernel == 'Kernel'):
+            CxxNorm[iS] = np.linalg.norm(np.squeeze(Cxx[iS, :, :]-np.diag(np.diag(np.squeeze(Cxx[iS, :, :])))))
+        else:
+            CxxNorm[iS] = np.linalg.norm(np.squeeze(Cxx[iS, :, :]))
+            
+
+    ranktol = tol * np.max(CxxNorm)
+
+    # 4. Calculate the ridge regression by hand.
+
+    # 4a. Invert all auto-correlation matrices
+    u = np.zeros(Cxx.shape)
+    v = np.zeros(Cxx.shape)
+    s = np.zeros(Cxy.shape)     # This is just the diagonal
+    hJN = np.zeros(Cxy.shape)
+    nb = Cxx.shape[1]
+
+    if (kernel == 'Kernel'):
+        for iS in range(nSets):
+            diagCxx = np.diag(np.diag(np.squeeze(Cxx[iS,:,:])))
+            u[iS,:,:],s[iS,:],v[iS,:,:] = np.linalg.svd(Cxx[iS,:,:]-diagCxx)
+    else:
+        for iS in range(nSets):
+            u[iS,:,:],s[iS,:],v[iS,:,:] = np.linalg.svd(Cxx[iS,:,:])
+
+    R2CV = np.zeros(ranktol.shape[0])
+
+    for it, tolval in enumerate(ranktol):
+
+        simple_sum_yy = 0
+        simple_sum_y =  0
+        simple_sum_error = 0
+        simple_sum_count = 0
+
+        for iS, iSet in enumerate(pair_train_set):
+            
+            if (kernel == 'Kernel'):
+                diagCxx = np.diag(np.diag(np.squeeze(Cxx[iS,:,:])))
+                Cxx_inv = nearDiagInv(diagCxx, u[iS,:,:], s[iS,:], v[iS,:,:], tol=tolval)
+                hJN[iS,:] = Cxx_inv @ Cxy[iS,:]
+            else:
+                is_mat = np.zeros((nb, nb))
+                # ridge regression - regularized normal equation
+                for ii in range(nb):
+                    is_mat[ii,ii] = 1.0/(s[iS, ii] + tolval)       
+                hJN[iS,:] = v[iS, :, :] @ is_mat @ (u[iS, :, :] @ Cxy[iS,:])
+
+            # Find x and actual y for leave out set to asses fit
+            pair = srData["datasets"][iSet]
+            x = generate_x(pair, x_feature, basis_args = basis_args, xGen = kernel, nPoints=nPoints, nLaguerre=nD)      
+            y = pair["resp"][y_feature]  
+            if "weights" not in pair["resp"]:
+                yw = np.ones_like(y)
+            else:
+                yw = pair["resp"]["weights"]
+
+            x = x[:, yw > 0]
+            y = y[yw > 0]
+            yw = yw[yw >0]
+    
+            # Get the prediciton
+            ypred = hJN[iS, :]@ (x - xavg[iS]) + yavg[iS]
+
+            # Get values to calculate R2-CV - here it is the coefficient of determination
+            sum_count = np.sum(yw)
+            sum_y = np.sum(y*yw)
+            sum_yy = np.sum(y*y*yw)
+            sum_error2 = np.sum(((ypred-y)**2)*yw)
+
+            simple_sum_yy += sum_yy
+            simple_sum_y +=  sum_y
+            simple_sum_error += sum_error2
+            simple_sum_count += sum_count
+        
+
+        y_mean = simple_sum_y/simple_sum_count
+        y_var = simple_sum_yy/simple_sum_count - y_mean**2
+        y_error = simple_sum_error/simple_sum_count
+
+        # This is a "one-trial" CV
+        R2CV[it] = 1.0 - y_error/y_var
+     
+    # Find the best tolerance level, i.e. the ridge penalty hyper-parameter
+    segModel = {}
+    itMax = np.argmax(R2CV)
+    segModel['Tol'] = tol
+    segModel['R2CV'] = R2CV
+
+    # Calculate one filter at the best tolerance
+    CxxAll /= countAll
+    CxyAll /= countAll
+    if (kernel == 'Kernel'):
+        diagCxx = np.diag(np.diag(np.squeeze(CxxAll)))
+        uAll,sAll,vAll = np.linalg.svd(CxxAll-diagCxx)
+        CxxAll_inv = nearDiagInv(diagCxx, uAll, sAll, vAll, tol=ranktol[itMax])
+        hJNAll = CxxAll_inv @ CxyAll
+    else:
+        uAll,sAll,vAll = np.linalg.svd(CxxAll)
+        for ii in range(nb):
+            is_mat[ii,ii] = 1.0/(sAll[ii] + ranktol[itMax])
+        hJNAll = vAll @ is_mat @ (uAll @ CxyAll)
+
+    # The bias term
+    b0 = -hJNAll @ (xsumAll/countAll) + (ysumAll/countAll)
+    segModel['weights'] = hJNAll
+    segModel['b0'] = b0[0,0]
+    segModel['yavg'] = ysumAll/countAll
+    segModel['xavg'] = xsumAll/countAll
+    segModel['Cxy'] = CxyAll
+    segModel['Cxx'] = CxxAll
+
+
+    # 6. Return segmented model
+    return segModel
+
+   
+
+def fit_seg_segId_model(
     srData, nLaguerre, nPoints, event_types, feature, pair_train_set=None, pca=None, tol = np.array([0.6, 0.5, 0.4, 0.2, 0.15, 0.100, 0.08, 0.050, 0.010, 0.005, 1e-03])
 ):
     """
@@ -834,7 +1136,7 @@ def fit_seg_model(
     else:
         npcs = pca.n_components_
 
-    # This pca transform might not be needed?  Maybe it is stored?
+    # This pca transform might not be needed?  Maybe it is stored? or it could be done on the fly?
     for iSet in range(pairCount):
         events = srData["datasets"][iSet]["events"][event_types]
         n_events = len(srData["datasets"][iSet]["events"]["index"])
