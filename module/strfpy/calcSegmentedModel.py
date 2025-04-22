@@ -517,7 +517,7 @@ def generate_x(pair, feature, basis_args = None, xGen = 'Kernel', nPoints=200, n
     elif xGen == 'LG':
         x = generate_laguerre_features(
         pair,
-        feature_key="pca_%s" % feature,
+        feature_key='pca_%s'%feature,
         resp_key='psth_smooth',
         laguerre_args=basis_args[:,0:2],
         nLaguerrePoints=nPoints,
@@ -526,7 +526,7 @@ def generate_x(pair, feature, basis_args = None, xGen = 'Kernel', nPoints=200, n
     elif xGen == 'DG':
         x = generate_dogs_features(
         pair,
-        feature_key="pca_%s" % feature,
+        feature_key= 'pca_%s'%feature,
         resp_key='psth_smooth',
         dogs_args=basis_args,
         nPoints=nPoints
@@ -865,6 +865,49 @@ def nearDiagInv(diagA, u, s, v, tol=0):
 
     return Ainv
 
+def generate_event_pca_feature(srData, event_types, feature, pca = None, npcs=20):
+
+    # first use PCA to reduce dim of the features'
+    nEventTypes = srData["datasets"][0]["events"][event_types].shape[1]
+    nfeats = srData["datasets"][0]["events"]["%s_nfeats" % feature]
+    pairCount = len(srData["datasets"])
+
+
+    if (pca == None) :
+        all_spect_windows = np.concatenate(
+        [
+            np.asarray(srData["datasets"][iSet]["events"][feature]).reshape(
+                (len(srData["datasets"][iSet]["events"]["index"]), nfeats)
+            )
+         for iSet in range(pairCount)
+        ],
+        axis=0,
+        )
+        pca = PCA(n_components=npcs)
+        pca.fit(all_spect_windows)
+
+
+
+    # This pca transform might not be needed?  Maybe it is stored? or it could be done on the fly?
+    for iSet in range(pairCount):
+        events = srData["datasets"][iSet]["events"][event_types]
+        n_events = len(srData["datasets"][iSet]["events"]["index"])
+        spect_pca_features = pca.transform(
+            srData["datasets"][iSet]["events"][feature].reshape((n_events, nfeats))
+        )
+
+        srData["datasets"][iSet]["events"]["pca_%s" % feature] = np.zeros(
+            (n_events, nEventTypes * npcs)
+        )
+
+        for iEventType in range(events.shape[1]):
+            srData["datasets"][iSet]["events"]["pca_%s" % feature][
+                events[:, iEventType] == 1, iEventType * npcs : (iEventType + 1) * npcs
+            ] = spect_pca_features[events[:, iEventType] == 1, :]
+
+    return pca
+    
+
 # fitting funcitons
 def fit_seg(
     srData, nPoints, x_feature, y_feature = 'psth_smooth', kernel = 'Kernel', basis_args = [], nD=2, pair_train_set=None, tol = np.array([0.6, 0.5, 0.4, 0.2, 0.15, 0.100, 0.08, 0.050, 0.010, 0.005, 1e-03])
@@ -901,7 +944,7 @@ def fit_seg(
         nFeatures = nPoints
     else:
         pair = srData["datasets"][pair_train_set[0]]
-        x = pair["events"][x_feature]
+        x = pair["events"]["pca_%s" % x_feature]
         if x.ndim == 1:
             x = x[:, np.newaxis]
         nFeatures = x.shape[1]
@@ -1055,6 +1098,8 @@ def fit_seg(
     itMax = np.argmax(R2CV)
     segModel['Tol'] = tol
     segModel['R2CV'] = R2CV
+    if ( (itMax == 0) | (itMax == len(tol)-1 )):
+        print('fit_seg() warning: Max prediction found for %f. Extend range of tolerance values' % tol[itMax])
 
     # Calculate one filter at the best tolerance
     CxxAll /= countAll
