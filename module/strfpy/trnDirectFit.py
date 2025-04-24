@@ -1,10 +1,13 @@
 import tempfile
 import os
 import numpy as np
-from scipy.signal.windows import dpss
+
 from scipy.signal import detrend
+from scipy.signal import windows
+
 # from .strfSetup import strflab2DS
 from .DirectFit import direct_fit
+from .calcAvg import df_Check_And_Load
 
 def trnDirectFit(modelParams=None, datIdx=None, options=None, globalDat=None, *args, **kwargs):
     """
@@ -29,7 +32,7 @@ def trnDirectFit(modelParams=None, datIdx=None, options=None, globalDat=None, *a
         options['sparsenesses'] = [0, 1, 2, 3, 4, 5, 6, 7]
         options['separable'] = 0
         options['timeVaryingPSTH'] = 0
-        options['timeVaryingPSTHTau'] = 41
+        options['timeVaryingPSTHTau'] = 31
         options['stimSampleRate'] = 1000
         options['respSampleRate'] = 1000
         options['infoFreqCutoff'] = 100
@@ -54,7 +57,7 @@ def trnDirectFit(modelParams=None, datIdx=None, options=None, globalDat=None, *a
     os.makedirs(options['outputDir'], exist_ok=True)
     
     # convert strflab's stim/response data format to direct fit's data format
-    DS = strflab2DS(globDat['stim'], globDat['resp'], globDat['groupIdx'], options['outputDir'])
+    DS = strflab2DS(globDat['stim'], globDat['resp'], globDat['weight'], globDat['groupIdx'], options['outputDir'])
     
     # set up direct fit parameters
     params = {
@@ -93,6 +96,11 @@ def trnDirectFit(modelParams=None, datIdx=None, options=None, globalDat=None, *a
     # subtract mean off of stimulus (because direct fit does this)
     for k in range(int(globDat['stim'].shape[0])):
         globDat['stim'][k,:] -= stimAvg.T
+
+    # Make a smoothing window to calculate and R2 as well
+    wHann = windows.hann(params['smooth_rt'], sym=True)  # The 31 ms (number of points) hanning window used to smooth the PSTH
+    wHann = wHann / sum(wHann)
+
     
     # compute information values for each set of jackknifed strfs per tolerance value
     print('Finding best STRF by computing info values across sparseness and tolerance values...')
@@ -100,6 +108,11 @@ def trnDirectFit(modelParams=None, datIdx=None, options=None, globalDat=None, *a
     bestStrf = -1
     bestTol = -1
     bestSparseness = -1
+    spvals = options['sparsenesses']
+
+    # Make space for R2CV
+    R2CV = np.zeros((len(strfFiles), len(spvals)))
+
     for k in range(len(strfFiles)):    # for each tolerance value
         svars = np.load(strfFiles[k], allow_pickle=True)
         
@@ -107,9 +120,7 @@ def trnDirectFit(modelParams=None, datIdx=None, options=None, globalDat=None, *a
         strfsJN_std = svars['STRFJNstd_Cell']
         strfMean = svars['STRF_Cell']
         strfStdMean = np.mean(strfsJN_std, axis=2)
-
-        spvals = options['sparsenesses']
-
+    
         for q in range(len(spvals)):
             smoothedMeanStrf = df_fast_filter_filter(strfMean, strfStdMean, spvals[q])
             smoothedMeanStrfToUse = smoothedMeanStrf[:, strfRng]
@@ -117,6 +128,10 @@ def trnDirectFit(modelParams=None, datIdx=None, options=None, globalDat=None, *a
             infoSum = 0
             numJNStrfs = numSamples
             infoTBins = 0
+            simple_sum_yy = 0
+            simple_sum_y =  0
+            simple_sum_error = 0
+            simple_sum_count = 0
             for p in range(numJNStrfs):
 
                 smoothedMeanStrfJN = df_fast_filter_filter(strfsJN[:, :, p], strfsJN_std[:, :, p], spvals[q])
@@ -146,11 +161,31 @@ def trnDirectFit(modelParams=None, datIdx=None, options=None, globalDat=None, *a
                 cStruct = compute_coherence_mean(mresp, rresp, options['respSampleRate'], options['infoFreqCutoff'], options['infoWindowSize'] )
                 infoSum += np.real(cStruct['info'])*len(mresp)
                 infoTBins += len(mresp)
+
+                # Also calculate an R2
+                # Get values to calculate R2-CV - here it is the coefficient of determination
+                yw = df_Check_And_Load(DS[p]['weightfiles'])   # the index is either p or srRange...  I need to figure this out
+                y = np.convolve(rresp, wHann, mode="same")
+                sum_count = np.sum(yw)
+                sum_y = np.sum(y*yw)
+                sum_yy = np.sum(y*y*yw)
+                sum_error2 = np.sum(((mresp-y)**2)*yw)
+
+                simple_sum_yy += sum_yy
+                simple_sum_y +=  sum_y
+                simple_sum_error += sum_error2
+                simple_sum_count += sum_count
                 
         
             avgInfo = infoSum / infoTBins   # This is now normalized by the stimulus length....
+            y_mean = simple_sum_y/simple_sum_count
+            y_var = simple_sum_yy/simple_sum_count - y_mean**2
+            y_error = simple_sum_error/simple_sum_count
 
-            print(f"Tolerance={options['tolerances'][k]}, Sparseness={spvals[q]}, Avg. Prediction Info={avgInfo}")
+            # This is a "one-trial" CV
+            R2CV[k,q] = 1.0 - y_error/y_var
+
+            print(f"Tolerance={options['tolerances'][k]}, Sparseness={spvals[q]}, Avg. Prediction Info={avgInfo}, R2CV={R2CV[k,q]}")
 
             # did this sparseness do better?
             if avgInfo > bestInfoVal:
@@ -158,18 +193,21 @@ def trnDirectFit(modelParams=None, datIdx=None, options=None, globalDat=None, *a
                 bestSparseness = spvals[q]
                 bestInfoVal = avgInfo
                 bestStrf = smoothedMeanStrfToUse
+                bestR2CV = R2CV[k,q]
                 
 
         ## get best strf
     
-    print('Best STRF found at tol=%f, sparseness=%d, info=%f bits\n' % (bestTol, bestSparseness, bestInfoVal))
+    print('Best STRF found at tol=%f, sparseness=%d, info=%.2f bits R2=%.4f\n' % (bestTol, bestSparseness, bestInfoVal, bestR2CV))
     
     modelParams['w1'] = bestStrf
+    modelParams['R2CV'] = R2CV
     
     if not options['timeVaryingPSTH']:
         modelParams['b1'] = respAvg
     else:
         modelParams['b1'] = tvRespAvg[p, :mresp.shape[1]]
+
 
      
     return modelParams, options
@@ -503,7 +541,7 @@ def df_mtchd_JN(x, nFFT=1024, Fs=2, WinLength=None, nOverlap=None, NW=3, Detrend
     return y, fo, meanP, Pupper, Plower, stP
 
 
-def strflab2DS(allstim, allresp, groupIndex, outputPath):
+def strflab2DS(allstim, allresp, allweight, groupIndex, outputPath):
     npairs = len(np.unique(groupIndex))
     DS = [None]*npairs
 
@@ -511,6 +549,7 @@ def strflab2DS(allstim, allresp, groupIndex, outputPath):
         rng = np.where(groupIndex == k)[0]
         stim = allstim[rng, :]
         resp = allresp[rng]
+        weight = allweight[rng]
 
         dfds = {}
 
@@ -522,9 +561,13 @@ def strflab2DS(allstim, allresp, groupIndex, outputPath):
 
         # write response to intermediate file
         rfile = os.path.join(outputPath, f'df_temp_resp_{k}.npy')
-        rawResp = resp
-        np.save(rfile, rawResp)
+        np.save(rfile, resp)
         dfds['respfiles'] = rfile
+
+        # write weights to intermediate file
+        wfile = os.path.join(outputPath, f'df_temp_weight_{k}.npy')
+        np.save(wfile, weight)
+        dfds['weightfiles'] = wfile
 
         dfds['nlen'] = stim.shape[0]
         dfds['ntrials'] = 1

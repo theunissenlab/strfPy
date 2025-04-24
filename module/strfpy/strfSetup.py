@@ -40,6 +40,9 @@ def linInit(nIn, delays, outputNL=None, freqDom=None):
 
 
 def srdata2strflab(srData, useRaw=False, preprocOptions={}):
+    ''' Unpacks srData to the stimulus, response and weights that will be used by strflab. 
+    Note that the single spike version (Raw) and the preprocOtions need a double check'''
+
     if 'meanSubtractStim' not in preprocOptions:
         preprocOptions['meanSubtractStim'] = False
     if 'scaleStim' not in preprocOptions:
@@ -64,6 +67,8 @@ def srdata2strflab(srData, useRaw=False, preprocOptions={}):
         allresp = [None] * numTrials
     else:
         allresp = np.zeros(totalRespLength)
+        allweights = np.zeros(totalRespLength)
+
     groupIndex = np.zeros(totalRespLength)
 
     currentIndex = 0
@@ -73,6 +78,11 @@ def srdata2strflab(srData, useRaw=False, preprocOptions={}):
         stim = ds['stim']['tfrep']['spec'].T
         stimLen = stim.shape[0]
         resp = ds['resp']['psth']
+        if "weights" not in ds["resp"]:
+            w = np.ones_like(resp)
+        else:
+            w = ds["resp"]["weights"]
+
 
         if stimLen != len(resp):
             raise ValueError(f"Stim and response lengths are not the same for dataset {k}!")
@@ -84,6 +94,7 @@ def srdata2strflab(srData, useRaw=False, preprocOptions={}):
 
         if not useRaw:
             allresp[rng] = resp
+            allweights[rng] = w
         else:
             for trialNum in range(numTrials):
                 spikes = allresp[trialNum]
@@ -118,11 +129,11 @@ def srdata2strflab(srData, useRaw=False, preprocOptions={}):
             print("Subtracing off scalar mean rate from response...")
             allresp -= srData['respAvg']
 
-    return allstim, allresp, groupIndex
+    return allstim, allresp, allweights, groupIndex
 
 
 
-def strfData(stim, resp, groupIdx=None):
+def strfData(stim, resp, weight, groupIdx=None):
     """
     Takes [stim] and [resp] from the preprocessing routines, and set them
     as global data.
@@ -183,23 +194,12 @@ def strfData(stim, resp, groupIdx=None):
     globDat = {
         'stim': stim,
         'resp': resp,
+        'weight': weight,
         'nSample': nSample,
         'groupIdx': groupIdx,
         'dataHash': dataHash,
     }
 
-    hresp = resp
-    if isinstance(resp, list):
-        hresp = []
-        for k in range(len(resp)):
-            st = resp[k]
-            hresp.extend(st)
-            
-    respHash = 100 * abs(np.nanmean(np.double(hresp)) + np.nanmean(np.double(hresp[::11])))
-    stimHash = 100 * abs(np.nanmean(np.double(stim[::109])))
-    magdif = np.log10((respHash + 0.00012) / (stimHash + 0.00011))
-    dataHash = respHash + stimHash * 10**magdif
-    globDat['dataHash'] = dataHash
 
     return globDat
 

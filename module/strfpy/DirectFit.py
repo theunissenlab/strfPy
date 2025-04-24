@@ -41,6 +41,7 @@ def direct_fit(params):
     # =========================================================
 
     stim_avg, avg_psth, psth, errFlg = df_cal_AVG(DS, DF_PARAMS)
+    # The psth is not normalized - i.e it is the sum of all trials and trials can have variable length - use weights to normalize
 
     # Check if cal_Avg ends normally
 

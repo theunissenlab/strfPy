@@ -120,30 +120,32 @@ def df_cal_AutoCorr(running_flag, DS, stim_avg, twindow, nband, PARAMS, JN_flag=
         else:
             # load stimulus file
             stim_env = df_Check_And_Load(DS[fidx]['stimfiles'])
+            weight = df_Check_And_Load(DS[fidx]['weightfiles'])
 
             nlen = np.shape(stim_env)[1]
             stimval = np.zeros((nband, nlen))
 
-            # subtract mean of stim from each stim
+            # subtract mean of stim from each stim and normalize by the sqrt of weight.
             for tgood in range(nlen):
-                stimval[:, tgood] = stim_env[0:nband, tgood] - stim_avg[0:nband]
+                stimval[:, tgood] = (stim_env[0:nband, tgood] - stim_avg[0:nband])* np.sqrt(weight[tgood])
             if cached_dir != 'null':
                 pass
                 # CS_diff = do_cached_calc_checksum_known('df_small_autocorr4', checksum_for_1_stim_autocorr, stimval, nband, np.shape(CS), twindow[1]) * DS[fidx - 1].ntrials
             else:
-                CS_diff = df_small_autocorr4(stimval, nband, np.shape(CS), twindow[1]) * DS[fidx]['ntrials']
+                CS_diff = df_small_autocorr4(stimval, nband, np.shape(CS), twindow[1]) 
         CS = CS + CS_diff
 
         # Count the total trials for later normalization
         lengthVec = np.ones(nlen)
         # CS_ns[0, :] = CS_ns[0, :] + DS[fidx - 1]['ntrials'] * np.correlate(lengthVec, lengthVec, mode='same')[twindow[0]:twindow[1]]
 
-        xcorr_res = np.correlate(lengthVec, lengthVec, mode="same")
+        # xcorr_res = np.correlate(lengthVec, lengthVec, mode="same")
+        xcorr_res = np.correlate(np.sqrt(weight), np.sqrt(weight), mode='same')
         len_xcorr = len(xcorr_res)
         xcorr_res = xcorr_res[len_xcorr//2 + twindow[0]:len_xcorr//2 + twindow[1]+1]
         # xcorr_res = xcorr_res[(twindow[0] - 1):(twindow[1])]
         # CS_ns[0, (twindow[0] - 1):(twindow[1])] += DS[fidx]['ntrials'] * xcorr_res
-        CS_ns[0, :] += DS[fidx]['ntrials'] * xcorr_res
+        CS_ns[0, :] +=  xcorr_res
 
 
 

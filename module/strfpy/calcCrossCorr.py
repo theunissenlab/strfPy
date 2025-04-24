@@ -160,6 +160,7 @@ def df_cal_CrossCorr(DS, PARAMS, stim_avg=None, avg_psth=None, psth=None,
     for fidx in range(filecount):
         # load stimulus file
         stim_env = df_Check_And_Load(DS[fidx]["stimfiles"])
+        weight = df_Check_And_Load(DS[fidx]["weightfiles"])
 
         # get time length for data input set
         nlen = min(psth[fidx].shape[1], stim_env.shape[1])
@@ -181,7 +182,7 @@ def df_cal_CrossCorr(DS, PARAMS, stim_avg=None, avg_psth=None, psth=None,
         
         # For normalization and assign the count_ns
  
-        CSR_JN_ns[fidx] = np.correlate(np.ones(nlen), np.ones(nlen), mode="same")[int(nlen/2-twindow[1]):int(nlen/2+twindow[1]+1)]
+        CSR_JN_ns[fidx] = np.correlate(np.sqrt(weight), np.sqrt(weight), mode="same")[int(nlen/2-twindow[1]):int(nlen/2+twindow[1]+1)]
         CSR_ns += CSR_JN_ns[fidx]
 
         # clear workspace by deleting stim_env

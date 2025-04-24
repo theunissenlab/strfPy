@@ -206,6 +206,7 @@ def df_cal_AVG(DDS, PARAMS, nband=None, psth_option=None, lin_flag=1, sil_window
     count_avg = 0
     tot_trials = 0
     psth = []
+    allweights = []
     timevary_psth = []
     Avg_psth = 0
 
@@ -216,6 +217,8 @@ def df_cal_AVG(DDS, PARAMS, nband=None, psth_option=None, lin_flag=1, sil_window
         this_len = stim_env.shape[1]  # get stim duration
         # load response files
         rawResp = df_Check_And_Load(DDS[n]["respfiles"])
+        # load weight files
+        weight = df_Check_And_Load(DDS[n]["weightfiles"])
 
         if isinstance(rawResp, list):
             spiketrain = np.zeros((DDS[n]["ntrials"], this_len))
@@ -230,6 +233,7 @@ def df_cal_AVG(DDS, PARAMS, nband=None, psth_option=None, lin_flag=1, sil_window
             newpsth = newpsth.T  # make sure new response data is trials x T.
             newpsth[newpsth < 0] = 0
             psth_rec = newpsth
+            weight = np.ones_like(psth_rec)*DDS[n]["ntrials"]  # Overwrite weight by number of trials.
         else:
             psth_rec = rawResp
             psth_rec = psth_rec.reshape(1, len(psth_rec))
@@ -249,8 +253,8 @@ def df_cal_AVG(DDS, PARAMS, nband=None, psth_option=None, lin_flag=1, sil_window
             )
             errFlg = 1
             return
-        stim_avg = stim_avg + np.sum(stim_env * DDS[n]["ntrials"], axis=1)
-        count_avg = count_avg + (nt + 2 * sil_window) * DDS[n]["ntrials"]
+        stim_avg = stim_avg + np.sum(stim_env[:nt] * weight[:nt], axis=1)
+        count_avg = count_avg + np.sum(weight[:nt])
 
         # then calculate response_avg
         if DDS[n]["ntrials"] > 1:
@@ -259,14 +263,15 @@ def df_cal_AVG(DDS, PARAMS, nband=None, psth_option=None, lin_flag=1, sil_window
             )  # Given that the stimulus auto correlation multiplies by ntrials - this should be sum and not mean...
             psth.append(temp[:nt])
         else:
-            psth.append(psth_rec[:nt])
+            psth.append(psth_rec[:nt]*weight[:nt])
+        
+        allweights.append(weight)
 
-        tot_trials = tot_trials + nt + sil_window
 
         # calculate the total spike/response avg.
-        Avg_psth = Avg_psth + np.sum(
-            psth[n][:nt] / DDS[n]["ntrials"]
-        )  # If this is average per trials
+        Avg_psth = Avg_psth + np.sum(psth[n][:nt])
+        tot_trials += np.sum(allweights[n][:nt])
+
 
         timevary_psth.append(psth[n].shape[1])
 
@@ -285,10 +290,8 @@ def df_cal_AVG(DDS, PARAMS, nband=None, psth_option=None, lin_flag=1, sil_window
         # whole_psth[nn, :psth[nn].shape[1]] = psth[nn] * DDS[nn]['ntrials']
         # count_psth[nn, :psth[nn].shape[1]] = np.ones(psth[nn].shape[1]) * DDS[nn]['ntrials']
 
-        whole_psth[nn, : psth[nn].shape[1]] = np.array(psth[nn]) * DDS[nn]["ntrials"]
-        count_psth[nn, : psth[nn].shape[1]] = (
-            np.ones(len(psth[nn])) * DDS[nn]["ntrials"]
-        )
+        whole_psth[nn, : psth[nn].shape[1]] = np.array(psth[nn])   # psth is already weighted
+        count_psth[nn, : psth[nn].shape[1]] = np.array(allweights[nn])
 
     sum_whole_psth = np.sum(whole_psth, axis=0)
     sum_count_psth = np.sum(count_psth, axis=0)
