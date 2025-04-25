@@ -142,7 +142,7 @@ def trnDirectFit(modelParams=None, datIdx=None, options=None, globalDat=None, *a
                 rresp = globDat['resp'][srRange]
 
                 # Skip the very short stims to perform the coherence.
-                if (len(rresp) < options['infoWindowSize']):
+                if (len(rresp) < options['infoWindowSize']) or not np.any(rresp):
                     continue
 
                 gindx = np.ones((1, stim.shape[0]))
