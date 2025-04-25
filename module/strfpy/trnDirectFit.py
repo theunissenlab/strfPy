@@ -148,7 +148,7 @@ def trnDirectFit(modelParams=None, datIdx=None, options=None, globalDat=None, *a
                 gindx = np.ones((1, stim.shape[0]))
 
                 #compute the prediction for the held out stimulus
-                mresp = conv_strf(stim, modelParams['delays'], strfToUse, gindx)
+                mresp = conv_strf(stim, modelParams['delays'], np.real(strfToUse), gindx)
 
                 if not options['timeVaryingPSTH']:
                     mresp = mresp + respAvg

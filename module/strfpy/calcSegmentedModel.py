@@ -182,17 +182,54 @@ def fit_kernel_LG (learned_conv_kernel, nPoints, nD=2):
     nLG = 7   # Fiting tau, alpha and five amplitudes for 5 LG
     basis_args = np.zeros((nD, nLG))
     for iEventType in range(nD):
-        popt, pcov = curve_fit(
-            sum_n_laguerres,
-            np.arange(nPoints),
-            learned_conv_kernel[iEventType, :]-np.mean(learned_conv_kernel[iEventType, :]),
-            p0=[15, 5, 1, 1, 1, 1, 1],
-            bounds=(
-                [0, 0, -np.inf, -np.inf, -np.inf, -np.inf, -np.inf],
-                [np.inf, np.inf, np.inf, np.inf, np.inf, np.inf, np.inf],
+
+        kernel_mean  = np.mean(learned_conv_kernel[iEventType, :])
+        ampMax = np.max(learned_conv_kernel[iEventType, :] - kernel_mean)
+        ampMin = np.min(learned_conv_kernel[iEventType, :] - kernel_mean)
+        if (np.abs(ampMax)> np.abs(ampMin)):
+            ampMax = ampMax
+            tau = np.argmax(learned_conv_kernel[iEventType, :] - kernel_mean)
+        else:
+            ampMax = ampMin
+            tau = np.argmin(learned_conv_kernel[iEventType, :] - kernel_mean)
+
+        ampVal = ampMax/laguerre(tau/4, 1, tau, tau/4, 1)
+        
+        # Fit double to have a good starting point
+        try:
+            pdouble, pcov = curve_fit(
+                sum_n_laguerres,
+                np.arange(nPoints),
+                learned_conv_kernel[iEventType, :]-kernel_mean,
+                p0=[tau/4, tau/4, 0, ampVal],
+                bounds=(
+                    [      0,       0, -np.inf, -np.inf],
+                    [nPoints, nPoints,  np.inf,  np.inf],
+                ),
+                method="trf"
+            )
+        except RuntimeError:
+            basis_args[iEventType, 0:4] = [tau, tau/2, 0, -ampMax]
+            continue
+        
+
+        # Now try 5
+        try:
+            popt, pcov = curve_fit(
+                sum_n_laguerres,
+                np.arange(nPoints),
+                learned_conv_kernel[iEventType, :]-kernel_mean,
+                p0=[pdouble[0], pdouble[1], pdouble[2], pdouble[3], 0, 0, 0],
+                bounds=(
+                    [      0,       0, -np.inf, -np.inf, -np.inf, -np.inf, -np.inf],
+                    [nPoints, nPoints,  np.inf,  np.inf,  np.inf,  np.inf,  np.inf],
                 ),
                 method="trf",
-        )
+            )
+        except RuntimeError:
+            basis_args[iEventType, 0:4] = pdouble
+            continue
+
         basis_args[iEventType, :] = popt
 
     return basis_args
@@ -1623,163 +1660,85 @@ def fit_seg_segId_model(
 # high level function
 
 
-def process_unit(
-    srData,
-    feature="log_spect_windows",
-    nPoints=200,
-    nLaguerre=5,                          # Set to -1 to use DOGS and their derivatives
-    pca=None,
-    LOO=True,                             # LeaveOneOut (LOO) cross-validation. Set to False for speed and testing but you won't get cross-validation data
-                                          # LOO is performed by leaving out all datasets obtained for a particular stim name.
-):
-
-    # parameters for fit
-    event_types = "onoff_feature"
-    pairCount = len(srData["datasets"])
-
-
-    # First fit the full model with the entire data set
-    pair_train_set = np.arange(pairCount)
-    pca, segIDModel, segModel, basis_args = fit_seg_model(
-        srData,
-        nLaguerre,
-        nPoints,
-        event_types,
-        feature,
-        pair_train_set,
-        pca=pca,
-    )
-
-    # Get predictions and calculate the single R2 for segment only model called here simple for the entire data set used for training and testing
-    """     simple_sum_xy = 0
-    simple_sum_xx = 0
-    simple_sum_yy = 0
-    simple_sum_x =  0
-    simple_sum_y =  0
-    simple_sum_count = 0
-    ntrials = np.zeros(len(pair_train_set))
-    for iSet in pair_train_set:
-        resp = srData['datasets'][iSet]['resp']
-        ntrials[iSet] = len(resp['trialDurations'])
-    
-    ntrialsR2 = int(mode(ntrials))
-    print('Max trials %d Min trials %d  Mode %d' % (ntrials.max(), ntrials.min(), ntrialsR2) )
-
-    for iSet in pair_train_set:
-        if (ntrials[iSet] >= ntrialsR2) :
-            sum_x, sum_xx, sum_y, sum_yy, sum_xy, sum_count = get_simple_prediction_r2_Values(srData["datasets"][iSet], ridge_conv_filter, nPoints, ntrialsR2, smWindow=31)
-            simple_sum_xy += sum_xy
-            simple_sum_xx += sum_xx
-            simple_sum_yy += sum_yy
-            simple_sum_x +=  sum_x
-            simple_sum_y +=  sum_y
-            simple_sum_count += sum_count
-
-    x_mean = simple_sum_x/simple_sum_count
-    y_mean = simple_sum_y/simple_sum_count
-    simple_r2_train = (simple_sum_xy/simple_sum_count - x_mean*y_mean)**2/((simple_sum_xx/simple_sum_count - x_mean**2)*(simple_sum_yy/simple_sum_count - y_mean**2))
-
-    """   
-    ntrialsR2 = 1
-    simple_r2_train = 0
-    simple_r2_test =  segModel['R2CV'][segModel['BestITolInd']]
-    all_r2_train = 0
-    all_r2_test = segIDModel['R2CV'][segIDModel['BestITolInd']]
-    
-    LOO = False
-    if LOO:
-    # Now do Leave One Out Cross-Validation (LOOCV)
-        print('Starting cross-validation calculations')
-
-    # Reset all counters
-        simple_sum_xy = 0
-        simple_sum_xx = 0
-        simple_sum_yy = 0
-        simple_sum_x =  0
-        simple_sum_y =  0
-        simple_sum_count = 0
-
-        all_sum_xy = 0
-        all_sum_xx = 0
-        all_sum_yy = 0
-        all_sum_x =  0
-        all_sum_y =  0
-        all_sum_count = 0
-
-        # Find unique stimuli
-        stim_names = []
-        for ds in srData['datasets']:
-            stim_names.append(ds['stim']['rawFile'])
-
-        unique_stims = np.unique(stim_names)
-    
-        for stimLO in unique_stims:
-
-            pair_test_set = []
-            for ids, ds in enumerate(srData['datasets']):
-                if (ds['stim']['rawFile'] == stimLO):
-                    pair_test_set.append(ids)
+def process_unit(nwb_file, unit_name):
+    ''' Fits using ridge or modified ridge 4 encoding models using the data structure in srData.  The four encoding models are:
+            a segmentation model,
+            a segmenation + identification using LG expansion
+            a segmentation + identification using DOGS expansion
+            a classic STRF
             
-            pair_test_set = np.array(pair_test_set)
-            pair_train_set = np.setdiff1d(range(pairCount), pair_test_set)
-        
-            # Fit model on training set
-            pca_loo, ridge_loo, ridge_conv_filter_loo, basis_args_loo = fit_seg_model(
-                srData,
-                nLaguerre,
-                nPoints,
-                event_types,
-                feature,
-                pair_train_set,
-                pca=pca,
-            )
+    '''
 
-            # Get Prediction on left out set
-            # First for segmented model
-            for iLO in pair_test_set:
-                sum_x, sum_xx, sum_y, sum_yy, sum_xy, sum_count =get_simple_prediction_r2_Values (srData["datasets"][iLO], ridge_conv_filter_loo, nPoints, ntrialsR2, smWindow=31)
-                simple_sum_xy += sum_xy
-                simple_sum_xx += sum_xx
-                simple_sum_yy += sum_yy
-                simple_sum_x +=  sum_x
-                simple_sum_y +=  sum_y
-                simple_sum_count += sum_count
+    # Segmentation and fit parameters - this could be a dictionary of options
+    respChunkLen = 100 # ms of stim to use in each chunk of feature space
+    segmentBuffer = 30 # ms to add at the beginning of each segment
+    nLaguerre = 25 # number of laguerre functions to use
+    feature = 'spect_windows'
+    event_types = 'onoff_feature'
+    nPoints = 150 # number of points to use in the kernel
+    strfLength = 100
+    nPCs = 20
+    nDOGS = 5
 
-                # Next for segmented + Indentification model
-                if (nLaguerre > 0):
-                    sum_x, sum_xx, sum_y, sum_yy, sum_xy, sum_count = get_prediction_r2_Values(srData["datasets"][iLO],
-                                                        ridge_loo, feature, basis_args_loo[:,0:2], ridge_conv_filter_loo, nPoints, ntrialsR2, nLaguerre=nLaguerre)
-                else:
-                    sum_x, sum_xx, sum_y, sum_yy, sum_xy, sum_count = get_prediction_r2_Values(srData["datasets"][iLO],
-                                                        ridge_loo, feature, basis_args_loo, ridge_conv_filter_loo, nPoints, ntrialsR2, nLaguerre=nLaguerre)
+    # Calculate spectrogram, smooth psth and make a new object the stimulus-response Data: srData
+    srData = preprocSound.preprocess_sound_nwb(nwb_file, 'playback_trials', unit_name, preprocess_type='ft')
+    preprocess_srData(srData, plot=False, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = False)
 
-                all_sum_xy += sum_xy
-                all_sum_xx += sum_xx
-                all_sum_yy += sum_yy
-                all_sum_x +=  sum_x
-                all_sum_y +=  sum_y
-                all_sum_count += sum_count
+    # Estimate the single trial SNR for this data set
+    snr = preprocSound.estimate_SNR(srData)
+    evOne= snr/(snr + 1)     # The expected variance (R2-ceiling) for one trial
 
-        # Now calculate R2 values
-        x_mean = simple_sum_x/simple_sum_count
-        y_mean = simple_sum_y/simple_sum_count
-        simple_r2_test = (simple_sum_xy/simple_sum_count - x_mean*y_mean)**2/((simple_sum_xx/simple_sum_count - x_mean**2)*(simple_sum_yy/simple_sum_count - y_mean**2))
+    # Fit the segmentation (on-off here) kernel (impulse response)
+    segModel = fit_seg(srData, nPoints, x_feature = event_types, y_feature = 'psth_smooth', kernel = 'Kernel', nD=2, tol=np.array([0.1, 0.01, 0.001, 0.0001]) )
+    learned_conv_kernel = segModel['weights'].reshape(2, nPoints)
+    r2segModel = np.max(segModel['R2CV'])
+
+    # Fit the on-off kernels with laguerre and DOGs
+    laguerre_args = fit_kernel_LG(learned_conv_kernel, nPoints, nD=2)
+    DOGS_args = fit_kernel_DG(learned_conv_kernel, nPoints, nD=2)
+
+    # first use PCA to reduce dim of the features'
+    pca_spect = generate_event_pca_feature(srData, event_types, feature, pca = None, npcs=nPCs)
+
+    # Calculate the segmented encoding models for spectrograms, LGs and DOGS.
+    segIDModelLG = fit_seg(srData, nPoints, feature, y_feature = 'psth_smooth', kernel = 'LG', basis_args =laguerre_args, nD=nLaguerre) 
+    r2segIDModelLG = np.max(segIDModelLG['R2CV'])
+    segIDModelDG = fit_seg(srData, nPoints, feature, y_feature = 'psth_smooth', kernel = 'DG', basis_args =DOGS_args, nD=nDOGS)
+    r2segIDModelDG = np.max(segIDModelDG['R2CV'])
+
+    # The Classic STRF
+    # Initialize the linear time invariant model
+    nStimChannels = srData['nStimChannels']
+    strfDelays = np.arange(strfLength)
+    modelParams = strfSetup.linInit(nStimChannels, strfDelays)
+
+    # Convert srData into a format that strflab understands
+    allstim, allresp, allweights, groupIndex = strfSetup.srdata2strflab(srData, useRaw = False)
+    globDat = strfSetup.strfData(allstim, allresp, allweights, groupIndex)
+
+    # Create default optimization options structure
+    params, optOptions = trnDirectFit.trnDirectFit()
+    optOptions['display'] = 1
+    datIdx = np.arange(len(allresp)) # the indexes of training data (all of it)
+    modelParamsTrained, options = strfSetup.strfOpt(modelParams, datIdx, optOptions, globDat)
+    r2STRF = modelParamsTrained['R2CV'].max()
+
+    result = {
+        'nwb_file': nwb_file,
+        'unit' : unit_name,
+        'r2Ceil' : evOne,
+        'segModel' : segModel,
+        'r2segModel' : r2segModel,
+        'Laguerre_args' :  laguerre_args,
+        'dogs_args' : DOGS_args,
+        'pca_spect' : pca_spect,
+        'segIDModelLG': segIDModelLG,
+        'r2segIDModelLG' : r2segIDModelLG,
+        'segIDModelDG': segIDModelLG,
+        'r2segIDModelDG' : r2segIDModelDG,
+        'strfModel' : modelParamsTrained,
+        'r2STRF' : r2STRF
+    }
     
-        x_mean = all_sum_x/all_sum_count
-        y_mean = all_sum_y/all_sum_count    
-        all_r2_test = (all_sum_xy/all_sum_count - x_mean*y_mean)**2/((all_sum_xx/all_sum_count - x_mean**2)*(all_sum_yy/all_sum_count - y_mean**2))
-
-    return (
-        srData,
-        pca,
-        segIDModel,
-        segModel,
-        basis_args,
-        [
-            simple_r2_train,
-            simple_r2_test,
-            all_r2_train,
-            all_r2_test,
-            ntrialsR2
-        ]
-    )  # , R2Ceil
+    return result
+    
