@@ -169,6 +169,9 @@ def trnDirectFit(modelParams=None, datIdx=None, options=None, globalDat=None, *a
                 sum_count = np.sum(yw)
                 sum_y = np.sum(y*yw)
                 sum_yy = np.sum(y*y*yw)
+
+                # For this R2 - rectify the prediction
+                mresp[mresp<0.0] = 0.0
                 sum_error2 = np.sum(((mresp-y)**2)*yw)
 
                 simple_sum_yy += sum_yy

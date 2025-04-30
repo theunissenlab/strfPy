@@ -170,7 +170,8 @@ def fit_kernel_LG (learned_conv_kernel, nPoints, nD=2):
     '''
     Fits an arbitray funcntion of nPoints with a Laguerre function expansion'''
 
-    
+    minDist = 20   # Minimum distance between peaks in points - set at 20 ms
+    minLat = 10    # Minimu latency
     def sum_n_laguerres(xt, *args):
         tau, alpha, *w = args
         nL = len(w)
@@ -184,32 +185,35 @@ def fit_kernel_LG (learned_conv_kernel, nPoints, nD=2):
     for iEventType in range(nD):
 
         kernel_mean  = np.mean(learned_conv_kernel[iEventType, :])
-        ampMax = np.max(learned_conv_kernel[iEventType, :] - kernel_mean)
-        ampMin = np.min(learned_conv_kernel[iEventType, :] - kernel_mean)
-        if (np.abs(ampMax)> np.abs(ampMin)):
-            ampMax = ampMax
-            tau = np.argmax(learned_conv_kernel[iEventType, :] - kernel_mean)
-        else:
-            ampMax = ampMin
-            tau = np.argmin(learned_conv_kernel[iEventType, :] - kernel_mean)
 
-        ampVal = ampMax/laguerre(tau/4, 1, tau, tau/4, 1)
+        peakInd, peakVals = find_peaks( learned_conv_kernel[iEventType, minLat:] - kernel_mean, distance=minDist, height= (None, None) )
+        troughInd, troughVals = find_peaks(-(learned_conv_kernel[iEventType, minLat:] - kernel_mean), distance=minDist, height= (None, None) )
+
+        # Take the first of the two:
+        if (peakInd[0] < troughInd[0]):
+            ampMax = peakVals["peak_heights"][0]
+            tau =  peakInd[0] + minLat
+        else:
+            ampMax = troughVals["peak_heights"][0]
+            tau = troughInd[0] + minLat
+
+        ampVal = ampMax/laguerre(tau, 1, tau, 1, 0)
         
-        # Fit double to have a good starting point
+        # Fit single to have a good starting point
         try:
             pdouble, pcov = curve_fit(
                 sum_n_laguerres,
                 np.arange(nPoints),
                 learned_conv_kernel[iEventType, :]-kernel_mean,
-                p0=[tau/4, tau/4, 0, ampVal],
+                p0=[tau, 1, ampVal],
                 bounds=(
-                    [      0,       0, -np.inf, -np.inf],
-                    [nPoints, nPoints,  np.inf,  np.inf],
+                    [      0,       0, -np.inf],
+                    [nPoints, nPoints,  np.inf],
                 ),
                 method="trf"
             )
         except RuntimeError:
-            basis_args[iEventType, 0:4] = [tau, tau/2, 0, -ampMax]
+            basis_args[iEventType, 0:3] = [tau, 1, ampVal]
             continue
         
 
@@ -219,7 +223,7 @@ def fit_kernel_LG (learned_conv_kernel, nPoints, nD=2):
                 sum_n_laguerres,
                 np.arange(nPoints),
                 learned_conv_kernel[iEventType, :]-kernel_mean,
-                p0=[pdouble[0], pdouble[1], pdouble[2], pdouble[3], 0, 0, 0],
+                p0=[pdouble[0], pdouble[1], pdouble[2], 0, 0, 0, 0],
                 bounds=(
                     [      0,       0, -np.inf, -np.inf, -np.inf, -np.inf, -np.inf],
                     [nPoints, nPoints,  np.inf,  np.inf,  np.inf,  np.inf,  np.inf],
@@ -227,7 +231,7 @@ def fit_kernel_LG (learned_conv_kernel, nPoints, nD=2):
                 method="trf",
             )
         except RuntimeError:
-            basis_args[iEventType, 0:4] = pdouble
+            basis_args[iEventType, 0:3] = pdouble
             continue
 
         basis_args[iEventType, :] = popt
@@ -253,7 +257,7 @@ def fit_kernel_DG(learned_conv_kernel, nPoints, nD=2):
         popt, pcov = curve_fit(
             dogs,
             np.arange(nPoints),
-            learned_conv_kernel[iEventType, :]-np.mean(learned_conv_kernel[iEventType, :]),
+            learned_conv_kernel[iEventType, :],
             p0=p0,
             bounds=(
             [np.min(learned_conv_kernel[iEventType, :]), 0, 0, 0, 0, 0, 0],
@@ -909,7 +913,7 @@ def generate_event_pca_feature(srData, event_types, feature, pca = None, npcs=20
     nfeats = srData["datasets"][0]["events"]["%s_nfeats" % feature]
     pairCount = len(srData["datasets"])
 
-
+    # FIt the pca on the features - notice that this is not weighted.
     if (pca == None) :
         all_spect_windows = np.concatenate(
         [
@@ -925,7 +929,7 @@ def generate_event_pca_feature(srData, event_types, feature, pca = None, npcs=20
 
 
 
-    # This pca transform might not be needed?  Maybe it is stored? or it could be done on the fly?
+    # Calculate and store the PC coefficients
     for iSet in range(pairCount):
         events = srData["datasets"][iSet]["events"][event_types]
         n_events = len(srData["datasets"][iSet]["events"]["index"])
@@ -947,8 +951,8 @@ def generate_event_pca_feature(srData, event_types, feature, pca = None, npcs=20
 
 # fitting funcitons
 def fit_seg(
-    srData, nPoints, x_feature, y_feature = 'psth_smooth', kernel = 'Kernel', basis_args = [], nD=2, pair_train_set=None, tol = np.array([0.6, 0.5, 0.4, 0.2, 0.15, 0.100, 0.08, 0.050, 0.010, 0.005, 1e-03])
-):
+    srData, nPoints, x_feature, y_feature = 'psth_smooth', y_R2feature = None, kernel = 'Kernel', basis_args = [], nD=2, pair_train_set=None, tol = np.array([0.6, 0.5, 0.4, 0.2, 0.15, 0.100, 0.08, 0.050, 0.010, 0.005, 1e-03]),
+store_error = False):
     """
     Fits a segmented model to the given data using ridge regresseion and leave one out cross-validation
     Parameters:
@@ -1001,10 +1005,11 @@ def fit_seg(
         if "weights" not in pair["resp"]:
             yw = np.ones_like(y)
         else:
-            yw = pair["resp"]["weights"]
+            yw = pair["resp"]["weights"][0:len(y)]   # The processed fatures might be shorter
 
         # Eliminate entres with zero weight - this is not needed but should make smaller x and y
-        x = x[:, yw > 0]
+        x = x[:, 0:len(y)]
+        x = x[:, yw> 0]
         y = y[yw > 0]
         yw = yw[yw > 0]
 
@@ -1032,8 +1037,10 @@ def fit_seg(
         if "weights" not in pair["resp"]:
             yw = np.ones_like(y)
         else:
-            yw = pair["resp"]["weights"]
-        x = x[:, yw > 0]
+            yw = pair["resp"]["weights"][0:len(y)]
+
+        x = x[:, 0:len(y)]
+        x = x[:, yw> 0]
         y = y[yw > 0]
         yw = yw[yw>0]
         
@@ -1102,20 +1109,33 @@ def fit_seg(
             if "weights" not in pair["resp"]:
                 yw = np.ones_like(y)
             else:
-                yw = pair["resp"]["weights"]
+                yw = pair["resp"]["weights"][0:len(y)]
 
-            x = x[:, yw > 0]
+            x = x[:, 0:len(y)]
+            x = x[:, yw> 0]
             y = y[yw > 0]
             yw = yw[yw >0]
     
             # Get the prediciton
             ypred = hJN[iS, :]@ (x - xavg[iS]) + yavg[iS]
 
+            # Store it if asked
+            if (store_error):
+                pair['resp']['error_%s' % kernel] = y - ypred
+
+            if (y_R2feature is None):
+                yr2 = y
+            else:
+                yr2 = pair['resp'][y_R2feature][0:len(y)]
+                yr2 = yr2[yw>0]
+                ypred += (yr2 - y)
+
+
             # Get values to calculate R2-CV - here it is the coefficient of determination
             sum_count = np.sum(yw)
-            sum_y = np.sum(y*yw)
-            sum_yy = np.sum(y*y*yw)
-            sum_error2 = np.sum(((ypred-y)**2)*yw)
+            sum_y = np.sum(yr2*yw)
+            sum_yy = np.sum(yr2*yr2*yw)
+            sum_error2 = np.sum(((ypred-yr2)**2)*yw)
 
             simple_sum_yy += sum_yy
             simple_sum_y +=  sum_y
@@ -1689,7 +1709,7 @@ def process_unit(nwb_file, unit_name):
     evOne= snr/(snr + 1)     # The expected variance (R2-ceiling) for one trial
 
     # Fit the segmentation (on-off here) kernel (impulse response)
-    segModel = fit_seg(srData, nPoints, x_feature = event_types, y_feature = 'psth_smooth', kernel = 'Kernel', nD=2, tol=np.array([0.1, 0.01, 0.001, 0.0001]) )
+    segModel = fit_seg(srData, nPoints, x_feature = event_types, y_feature = 'psth_smooth', kernel = 'Kernel', nD=2, tol=np.array([0.1, 0.01, 0.001, 0.0001]), store_error = True  )
     learned_conv_kernel = segModel['weights'].reshape(2, nPoints)
     r2segModel = np.max(segModel['R2CV'])
 
@@ -1701,9 +1721,9 @@ def process_unit(nwb_file, unit_name):
     pca_spect = generate_event_pca_feature(srData, event_types, feature, pca = None, npcs=nPCs)
 
     # Calculate the segmented encoding models for spectrograms, LGs and DOGS.
-    segIDModelLG = fit_seg(srData, nPoints, feature, y_feature = 'psth_smooth', kernel = 'LG', basis_args =laguerre_args, nD=nLaguerre) 
+    segIDModelLG = fit_seg(srData, nPoints, feature, y_feature = 'error_Kernel', y_R2feature = 'psth_smooth', kernel = 'LG', basis_args =laguerre_args, nD=nLaguerre) 
     r2segIDModelLG = np.max(segIDModelLG['R2CV'])
-    segIDModelDG = fit_seg(srData, nPoints, feature, y_feature = 'psth_smooth', kernel = 'DG', basis_args =DOGS_args, nD=nDOGS)
+    segIDModelDG = fit_seg(srData, nPoints, feature, y_feature = 'error_Kernel', y_R2feature = 'psth_smooth', kernel = 'DG', basis_args =DOGS_args, nD=nDOGS)
     r2segIDModelDG = np.max(segIDModelDG['R2CV'])
 
     # The Classic STRF

@@ -9,6 +9,23 @@ from module.strfpy.timeFreq import timefreq, timefreq_raw
 import pandas as pd
 import pynwb as nwb
 
+def find_long_zero_segments(arr, min_length=10):
+    # Find where the array is zero
+    is_zero = (arr == 0)
+    # Get the indices where values change
+    changes = np.diff(is_zero.astype(int))
+    start_idx = np.where(changes == 1)[0] + 1
+    end_idx = np.where(changes == -1)[0] + 1
+    # Handle edge cases where array starts or ends with zeros
+    if is_zero[0]:
+        start_idx = np.insert(start_idx, 0, 0)
+    if is_zero[-1]:
+        end_idx = np.append(end_idx, len(arr))
+    # Filter segments by length and return as list of (start, end) tuples
+    segments = [(start, end) for start, end in zip(start_idx, end_idx)
+               if end - start > min_length]
+    return segments
+
 def weighted_mean(x, w):
     """Weighted Mean"""
     return np.sum(x * w) / np.sum(w)
@@ -656,6 +673,7 @@ def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft'
             # preprocess the stimuli by loading the wav and generating the tfrep
             wav_file_name = stim_name #raw_stim_files[k]
             stim_data = nwbfile.stimulus[stim_name].data[:]
+            zero_segs = find_long_zero_segments(stim_data, min_length=10)
             stim_fs = nwbfile.stimulus[stim_name].rate
             stim_params['fband'] = 120
             stim_params['nstd'] = 6
@@ -705,9 +723,20 @@ def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft'
             # psth = np.zeros(nbins)
             # psth[psth_idx[psth_idx < nbins]] = counts[psth_idx < nbins]
 
+            # Generate weights
             weights = np.zeros(nbins)
             trial_durations_samples = ((stim_df.stop_time.values - stim_df.start_time.values) * stim_sample_rate)
             weights = (trial_durations_samples >= np.arange(nbins)[:, None]).sum(axis=1)
+            weights_sound = np.copy(weights)
+
+            # Zero out weights during the segments without stim
+            for segZ in zero_segs:
+                ind_start = int(np.round(segZ[0]*resp_sample_rate/stim_fs))
+                ind_end = int(np.round(segZ[1]*resp_sample_rate/stim_fs))
+                if (ind_end > (nbins-1) ):
+                    ind_end = nbins-1
+                weights_sound[ind_start:ind_end+1] = 0
+
             psth_idx, counts = np.unique(np.round(np.concatenate(spike_times) * 1000 / bin_size).astype(int), return_counts=True)
             psth = np.zeros(nbins)
             psth[psth_idx[psth_idx < nbins]] = counts[psth_idx < nbins]
@@ -721,7 +750,7 @@ def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft'
                 'rawSpikeIndicies': [(st * 1000 / bin_size).astype(int) for st in spike_times],
                 'trialDurations': trial_durations_samples,
                 'psth': psth,
-                'weights': weights
+                'weights': weights_sound    # We are setting weights to zero when there is no sound.
             }
             ds['resp'] = resp
 
@@ -912,6 +941,11 @@ def estimate_SNR(srData, smWindow=31):
             ntrials = ntrials-1
 
         nT = int(np.min(resp['trialDurations'][0:ntrials]))
+
+        zeroTest = np.argwhere(resp['weights']==0)
+        if ( len(zeroTest) ):
+            nT = np.min((nT, zeroTest[0][0]))
+
         spike_inds = resp['rawSpikeIndicies'][0:ntrials]
 
         # lets split the trials into two halves
