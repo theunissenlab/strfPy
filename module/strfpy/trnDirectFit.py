@@ -182,7 +182,7 @@ def trnDirectFit(modelParams=None, datIdx=None, options=None, globalDat=None, *a
         
             avgInfo = infoSum / infoTBins   # This is now normalized by the stimulus length....
             y_mean = simple_sum_y/simple_sum_count
-            y_var = simple_sum_yy/simple_sum_count - y_mean**2
+            y_var = simple_sum_yy/simple_sum_count - y_mean**2    
             y_error = simple_sum_error/simple_sum_count
 
             # This is a "one-trial" CV

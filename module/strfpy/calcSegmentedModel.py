@@ -1130,6 +1130,8 @@ store_error = False):
                 yr2 = yr2[yw>0]
                 ypred += (yr2 - y)
 
+            # Rectify - this should be a flag
+            ypred[ypred<0] = 0
 
             # Get values to calculate R2-CV - here it is the coefficient of determination
             sum_count = np.sum(yw)

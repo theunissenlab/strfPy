@@ -177,16 +177,13 @@ def df_cal_CrossCorr(DS, PARAMS, stim_avg=None, avg_psth=None, psth=None,
             psthval = psth[fidx] - avg_psth
 
         # New version of algorithm for computing cross-correlation
-        CSR_JN[fidx] = df_internal_cal_CrossCorr(stimval, psthval, twindow[1])
+        CSR_JN[fidx] = df_internal_cal_CrossCorr(stimval*np.sqrt(weight), psthval*np.sqrt(weight), twindow[1])
         CSR += CSR_JN[fidx]
         
         # For normalization and assign the count_ns
  
         CSR_JN_ns[fidx] = np.correlate(np.sqrt(weight), np.sqrt(weight), mode="same")[int(nlen/2-twindow[1]):int(nlen/2+twindow[1]+1)]
         CSR_ns += CSR_JN_ns[fidx]
-
-        # clear workspace by deleting stim_env
-        del stim_env, stimval, psthval
 
     print("Done calculation of cross-correlation.")
     

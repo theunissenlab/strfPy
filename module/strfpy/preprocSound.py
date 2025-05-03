@@ -963,6 +963,10 @@ def estimate_SNR(srData, smWindow=31):
         # Smooth the psth halves, cross-correlate and estimate the unscaled trial SNR
         psth1 = np.convolve(psth1, wHann, mode='same')
         psth2 = np.convolve(psth2, wHann, mode='same')
+        
+        # Skip trials where there is no variation
+        if ( (np.var(psth1) == 0.0) | (np.var(psth2) == 0.0) ):
+            continue
 
         r = Pearson_r(psth1, psth2)
         

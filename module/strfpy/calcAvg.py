@@ -216,7 +216,7 @@ def df_cal_AVG(DDS, PARAMS, nband=None, psth_option=None, lin_flag=1, sil_window
         stim_env = df_Check_And_Load(DDS[n]["stimfiles"])
         this_len = stim_env.shape[1]  # get stim duration
         # load response files
-        rawResp = df_Check_And_Load(DDS[n]["respfiles"])
+        rawResp = df_Check_And_Load(DDS[n]["respfiles"])   # 
         # load weight files
         weight = df_Check_And_Load(DDS[n]["weightfiles"])
 
@@ -260,17 +260,17 @@ def df_cal_AVG(DDS, PARAMS, nband=None, psth_option=None, lin_flag=1, sil_window
         if DDS[n]["ntrials"] > 1:
             temp = np.sum(
                 psth_rec, axis=1
-            )  # Given that the stimulus auto correlation multiplies by ntrials - this should be sum and not mean...
+            )  # Given that the stimulus auto correlation multiplies by ntrials - this should be sum and not mean... # this needs a check...
             psth.append(temp[:nt])
         else:
-            psth.append(psth_rec[:nt]*weight[:nt])
+            psth.append(psth_rec[:nt])
         
         allweights.append(weight)
 
 
         # calculate the total spike/response avg.
-        Avg_psth = Avg_psth + np.sum(psth[n][:nt])
-        tot_trials += np.sum(allweights[n][:nt])
+        Avg_psth = Avg_psth + np.sum(psth[n][:nt]*weight[:nt])
+        tot_trials += np.sum(weight[:nt])
 
 
         timevary_psth.append(psth[n].shape[1])
@@ -290,7 +290,7 @@ def df_cal_AVG(DDS, PARAMS, nband=None, psth_option=None, lin_flag=1, sil_window
         # whole_psth[nn, :psth[nn].shape[1]] = psth[nn] * DDS[nn]['ntrials']
         # count_psth[nn, :psth[nn].shape[1]] = np.ones(psth[nn].shape[1]) * DDS[nn]['ntrials']
 
-        whole_psth[nn, : psth[nn].shape[1]] = np.array(psth[nn])   # psth is already weighted
+        whole_psth[nn, : psth[nn].shape[1]] = np.array(psth[nn]*allweights[nn])  
         count_psth[nn, : psth[nn].shape[1]] = np.array(allweights[nn])
 
     sum_whole_psth = np.sum(whole_psth, axis=0)
