@@ -6,7 +6,7 @@ import os
 import numpy as np
 import time
 from .calcAvg import calculateLeaveOneOutAverages, df_Check_And_Load
-from scipy.signal import correlate
+from scipy.signal import correlate, correlation_lags
 import pandas
 import itertools 
 
@@ -55,15 +55,93 @@ def calculateAutoCorrelation(dfStrfLab:pandas.DataFrame, nlags:int):
     return ac_sum 
 
 
+def df_cal_AutoCorrJN(DS, stim_avg, twindow, nband, PARAMS):
+
+    # Initialize the output and set its size
+    # Get the total data files
+    filecount = len(DS)
+    
+    # Temporal axis range
+    tot_corr = int(np.diff(twindow) + 1)
+    
+    # Spatial axis range
+    spa_corr = int((nband * (nband - 1)) // 2 + nband)
+    
+    # Initialize CS and CSJN variable
+    CS = np.zeros((spa_corr, tot_corr))
+    CS_ns = np.zeros(tot_corr)
+
+    # JN varriables
+    CS_JN = [np.zeros((spa_corr, tot_corr)) for i in range(filecount)]
+    CS_JN_ns = [np.zeros(tot_corr) for i in range(filecount)]
+    
+    # Do calculation. The algorithm is based on FET's dcp_stim.c
+    for fidx in range(filecount):  # Loop through all data files
+        # load stimulus file
+        stim_env = df_Check_And_Load(DS[fidx]['stimfiles'])
+        weight = df_Check_And_Load(DS[fidx]['weightfiles'])
+
+        nlen = np.shape(stim_env)[1]
+        stimval = np.zeros((nband, nlen))
+
+        # subtract mean and normalize by the sqrt of weight.
+        stimval = (stim_env[0:nband, :] - np.reshape(stim_avg[0:nband], (nband, 1)) )* np.sqrt(weight[0:nlen])
+
+        # The normalization vector: calculated and stored
+        xcorr_w = correlate(np.sqrt(weight[0:nlen]), np.sqrt(weight[0:nlen]), mode='full')
+        lags = correlation_lags(nlen, nlen, mode="full")
+        itlow = np.argwhere(lags == twindow[0])[0][0]
+        ithigh = np.argwhere(lags == twindow[1])[0][0]+1
+        CS_JN_ns[fidx] = xcorr_w[itlow:ithigh]
+        CS_ns += xcorr_w[itlow:ithigh]
+
+        xb = 0
+        for ib1 in range(nband):
+            for ib2 in range(ib1, nband):
+                xcorr_s = correlate(stimval[ib1,:], stimval[ib2,:], mode="full")
+
+                CS_JN[fidx][xb,:] = xcorr_s[itlow:ithigh]
+                CS[xb, :] += xcorr_s[itlow:ithigh]
+                xb += 1
+
+    # Finish the JN Calculations
+    for fidx in range(filecount):
+        norm = (CS_ns-CS_JN_ns[fidx])
+        for i in range(spa_corr):
+            CS_JN[fidx][i,:] = (CS[i,:]-CS_JN[fidx][i,:])/norm
+    
+    # Finish the normalization
+    for i in range(spa_corr):
+        CS[i,:] = CS[i,:]/CS_ns
+
+    # ========================================================
+    # save stimulus auto-correlation matrix into file
+    # ========================================================
+    currentPath = os.getcwd()
+    outputPath = PARAMS['outputPath']
+
+    if outputPath:
+        os.chdir(outputPath)
+    else:
+        print('Saving output to Output Dir.')
+        os.makedirs('Output', exist_ok=True)
+        os.chdir('Output')
+        outputPath = os.getcwd()
+
+    np.save('Stim_autocorr.npy', CS)
+    np.save('CS_JN.npy', CS_JN)
+    os.chdir(currentPath)
+
+    # ========================================================
+    # END OF CAL_AUTOCORR
+    # ========================================================
+
+    return CS, CS_JN
 
 
 
-def df_cal_AutoCorr(running_flag, DS, stim_avg, twindow, nband, PARAMS, JN_flag=None):
-    global DF_PARAMS
-    DF_PARAMS=PARAMS
+def df_cal_AutoCorr(DS, stim_avg, twindow, nband, PARAMS, JN_flag=None):
 
-    # Check if we have valid required input
-    t_autocorr_start = time.process_time()
     
     errFlg = 0
     if DS is None:
@@ -104,7 +182,7 @@ def df_cal_AutoCorr(running_flag, DS, stim_avg, twindow, nband, PARAMS, JN_flag=
     # Do calculation. The algorithm is based on FET's dcp_stim.c
     for fidx in range(filecount):  # Loop through all data files
         # do autocorrelation calculation
-        just_load_answer = 0
+        # just_load_answer = 0
         
         if cached_dir != 'null':
             pass
@@ -126,8 +204,7 @@ def df_cal_AutoCorr(running_flag, DS, stim_avg, twindow, nband, PARAMS, JN_flag=
             stimval = np.zeros((nband, nlen))
 
             # subtract mean of stim from each stim and normalize by the sqrt of weight.
-            for tgood in range(nlen):
-                stimval[:, tgood] = (stim_env[0:nband, tgood] - stim_avg[0:nband])* np.sqrt(weight[tgood])
+            stimval = (stim_env[0:nband, :] - np.reshape(stim_avg[0:nband], (nband, 1)) )* np.sqrt(weight[0:nlen])
             if cached_dir != 'null':
                 pass
                 # CS_diff = do_cached_calc_checksum_known('df_small_autocorr4', checksum_for_1_stim_autocorr, stimval, nband, np.shape(CS), twindow[1]) * DS[fidx - 1].ntrials
@@ -135,28 +212,13 @@ def df_cal_AutoCorr(running_flag, DS, stim_avg, twindow, nband, PARAMS, JN_flag=
                 CS_diff = df_small_autocorr4(stimval, nband, np.shape(CS), twindow[1]) 
         CS = CS + CS_diff
 
-        # Count the total trials for later normalization
-        lengthVec = np.ones(nlen)
-        # CS_ns[0, :] = CS_ns[0, :] + DS[fidx - 1]['ntrials'] * np.correlate(lengthVec, lengthVec, mode='same')[twindow[0]:twindow[1]]
-
-        # xcorr_res = np.correlate(lengthVec, lengthVec, mode="same")
-        xcorr_res = np.correlate(np.sqrt(weight), np.sqrt(weight), mode='same')
+ 
+        # The weight vector for the cross correlation
+        xcorr_res = np.correlate(np.sqrt(weight[0:nlen]), np.sqrt(weight[0:nlen]), mode='same')
         len_xcorr = len(xcorr_res)
         xcorr_res = xcorr_res[len_xcorr//2 + twindow[0]:len_xcorr//2 + twindow[1]+1]
-        # xcorr_res = xcorr_res[(twindow[0] - 1):(twindow[1])]
-        # CS_ns[0, (twindow[0] - 1):(twindow[1])] += DS[fidx]['ntrials'] * xcorr_res
         CS_ns[0, :] +=  xcorr_res
 
-
-
-
-        # clear workspace
-        if 'stim_env' in locals():
-            del stim_env
-        if 'stimval' in locals():
-            del stimval
-        if 'lengthVec' in locals():
-            del lengthVec
 
     print('Done auto-correlation calculation')
 
@@ -200,7 +262,7 @@ def df_cal_AutoCorr(running_flag, DS, stim_avg, twindow, nband, PARAMS, JN_flag=
 
 def df_small_autocorr4(stimval, nband, size_CS, twin, use_fourier=None):
     # Same as small_autocorr, but without the ntrials multiplication, which can be done outside.
-    xb = 1
+    xb = 0
     nband = stimval.shape[0]
     CS = np.zeros((int(nband*(nband+1)/2),2*twin+1)) # zeros(size_CS)
     N = stimval.shape[1]

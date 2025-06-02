@@ -108,8 +108,7 @@ def df_cal_CrossCorr(DS, PARAMS, stim_avg=None, avg_psth=None, psth=None,
         errFlg : int
             The flag to indicate whether an error has occurred (0: no error, 1: error).
     """
-    global DF_PARAMS
-    DF_PARAMS = PARAMS
+ 
     # ========================================================
     # check whether we have valid required input
     # ========================================================
@@ -164,25 +163,25 @@ def df_cal_CrossCorr(DS, PARAMS, stim_avg=None, avg_psth=None, psth=None,
 
         # get time length for data input set
         nlen = min(psth[fidx].shape[1], stim_env.shape[1])
+
         # subtract mean_stim from stim and mean_psth from psth
         stimval = np.zeros((nband, nlen))
-        for tgood in range(nlen):
-            stimval[:, tgood] = stim_env[0:nband, tgood] - stim_avg[0:nband]
+        stimval = stim_env[0:nband, :] - stim_avg[0:nband].reshape((nband,1))
 
         # For Time-varying firing rate
-        timevary_PSTH = DF_PARAMS["timevary_PSTH"]
+        timevary_PSTH = PARAMS["timevary_PSTH"]
         if timevary_PSTH == 1:
             psthval = psth[fidx][0:nlen] - avg_psth[fidx, 0:nlen]
         else:
             psthval = psth[fidx] - avg_psth
 
         # New version of algorithm for computing cross-correlation
-        CSR_JN[fidx] = df_internal_cal_CrossCorr(stimval*np.sqrt(weight), psthval*np.sqrt(weight), twindow[1])
+        CSR_JN[fidx] = df_internal_cal_CrossCorr(stimval, psthval*weight[0:nlen], twindow[1])
         CSR += CSR_JN[fidx]
         
         # For normalization and assign the count_ns
  
-        CSR_JN_ns[fidx] = np.correlate(np.sqrt(weight), np.sqrt(weight), mode="same")[int(nlen/2-twindow[1]):int(nlen/2+twindow[1]+1)]
+        CSR_JN_ns[fidx] = np.correlate(np.ones(nlen), weight[0:nlen], mode="same")[int(nlen/2-twindow[1]):int(nlen/2+twindow[1]+1)]
         CSR_ns += CSR_JN_ns[fidx]
 
     print("Done calculation of cross-correlation.")
@@ -209,7 +208,7 @@ def df_cal_CrossCorr(DS, PARAMS, stim_avg=None, avg_psth=None, psth=None,
     
     # Save stim-spike cross correlation matrix into a file
     currentPath = os.getcwd()
-    outputPath = DF_PARAMS['outputPath']
+    outputPath = PARAMS['outputPath']
     if outputPath:
         os.chdir(outputPath)
     else:
@@ -272,14 +271,13 @@ def df_internal_cal_CrossCorr(stimval, psthval, twin, do_fourier=None):
 
 # converted with chatgpt: df_fft_AutoCrossCorr.m
 # 20230405
-def df_fft_AutoCrossCorr(stim, stim_spike, CSR_JN, TimeLag, NBAND, nstd_val):
+def df_fft_AutoCrossCorr(stim, stim_JN, stim_spike, CSR_JN, TimeLag, NBAND, nstd_val):
     
     ncorr = stim.shape[0]
     nb = NBAND
     nt = 2 * TimeLag + 1
     nJN = len(CSR_JN)
     
-    asize = np.array([nt, nb])
     w = np.hanning(nt)
     
     stim_spike = np.fliplr(stim_spike)
@@ -288,9 +286,8 @@ def df_fft_AutoCrossCorr(stim, stim_spike, CSR_JN, TimeLag, NBAND, nstd_val):
     
     stim_spike_JN = np.zeros((nb, nt, nJN))
     for iJN in range(nJN):
-        CSR = CSR_JN[iJN]
         for ib in range(nb):
-            stim_spike_JN[ib,:,iJN] = np.flipud(CSR[ib,:]) * w
+            stim_spike_JN[ib,:,iJN] = np.flipud(CSR_JN[iJN][ib,:]) * w
     
     stim_spike_JNf = np.fft.fft(stim_spike_JN, axis=1)
     stim_spike_JNmf = np.mean(stim_spike_JNf, axis=2)
@@ -298,11 +295,14 @@ def df_fft_AutoCrossCorr(stim, stim_spike, CSR_JN, TimeLag, NBAND, nstd_val):
 
     JNv = (nJN - 1) * (nJN - 1) / nJN
     j = 1j
-    hcuttoff = 0
     nf = (nt - 1) // 2 + 1
     
     stim_spike_JNvf = np.zeros((nb, nf), dtype=complex)
     fstim = np.zeros(stim.shape, dtype=complex)
+    fstim_JN = []
+    for iJN in range(nJN):
+        fstim_JN.append(np.zeros(stim.shape, dtype=complex))
+
     stim_spike_sf = np.zeros((nb, nt),dtype=complex)#, nJN))
     #fstim_spike = stim_spike_sf
     
@@ -338,12 +338,20 @@ def df_fft_AutoCrossCorr(stim, stim_spike, CSR_JN, TimeLag, NBAND, nstd_val):
     fstim_spike = stim_spike_sf
 
     nt2=int((nt-1)/2)
-    for i in range(ncorr):
-        sh_stim = np.zeros(nt)
+    sh_stim = np.zeros(nt)
+    for i in range(ncorr):       
         w_stim =  stim[i,:]*w
         sh_stim[:nt2+1]=w_stim[nt2:nt]
         sh_stim[nt2+1:nt]=w_stim[:nt2]
         fstim[i,:] = np.fft.fft(sh_stim)
-    return fstim, fstim_spike, stim_spike_JNf
+        for iJN in range(nJN):
+            w_stim =  stim_JN[iJN][i,:]*w
+            sh_stim[:nt2+1]=w_stim[nt2:nt]
+            sh_stim[nt2+1:nt]=w_stim[:nt2]
+            fstim_JN[iJN][i,:] = np.fft.fft(sh_stim)
+
+
+
+    return fstim, fstim_JN, fstim_spike, stim_spike_JNf
 
 

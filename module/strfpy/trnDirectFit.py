@@ -1,4 +1,3 @@
-import tempfile
 import os
 import numpy as np
 
@@ -9,78 +8,38 @@ from scipy.signal import windows
 from .DirectFit import direct_fit
 from .calcAvg import df_Check_And_Load
 
-def trnDirectFit(modelParams=None, datIdx=None, options=None, globalDat=None, *args, **kwargs):
+def trnDirectFit(modelParams, globalDat):
     """
     Trains a direct fit model and sets the model parameters.
 
     Args:
     - modelParams: dictionary containing model parameters
     - datIdx: indices of the data to be used for training
-    - options: dictionary containing options for training
     - *args: optional additional arguments
 
     Returns:
     - modelParams: updated dictionary of model parameters
-    - options: updated dictionary of options
     """
-
-    ## set default parameters and return if no arguments are passed
-    if len(args) == 0:
-        options = {}
-        options['funcName'] = 'trnDirectFit'
-        options['tolerances'] = [0.100, 0.050, 0.010, 0.005, 1e-03, 1e-04, 5e-05, 0]
-        options['sparsenesses'] = [0, 1, 2, 3, 4, 5, 6, 7]
-        options['separable'] = 0
-        options['timeVaryingPSTH'] = 0
-        options['timeVaryingPSTHTau'] = 31
-        options['stimSampleRate'] = 1000
-        options['respSampleRate'] = 1000
-        options['infoFreqCutoff'] = 100
-        options['infoWindowSize'] = 0.250
-
-        tempDir = tempfile.gettempdir()
-        options['outputDir'] = tempDir
-
-        modelParams = options
-        return modelParams, options
 
     if modelParams['type'] != 'lin' or modelParams['outputNL'] != 'linear':
         raise ValueError('trnDirectFit only works for linear models with no output nonlinearity!')
         
-    if options['respSampleRate'] != options['stimSampleRate']:
+    if modelParams['respsamprate'] != modelParams['ampsamprate']:
         raise ValueError('trnDirectFit: Stimulus and response sampling rate must be equal!')
 
-    global globDat
-    
-    globDat = globalDat
-    
-    os.makedirs(options['outputDir'], exist_ok=True)
+    os.makedirs(modelParams['outputPath'], exist_ok=True)
     
     # convert strflab's stim/response data format to direct fit's data format
-    DS = strflab2DS(globDat['stim'], globDat['resp'], globDat['weight'], globDat['groupIdx'], options['outputDir'])
-    
-    # set up direct fit parameters
-    params = {
-        'DS': DS,
-        'NBAND': globDat['stim'].shape[1],
-        'Tol_val': options['tolerances'],
-        'setSep': options['separable'],
-        'TimeLagUnit': 'frame',
-        'timevary_PSTH': 0,
-        'smooth_rt': options['timeVaryingPSTHTau'],
-        'ampsamprate': options['stimSampleRate'],
-        'respsamprate': options['respSampleRate'],
-        'outputPath': options['outputDir'],
-        'use_alien_space': 0,
-        'alien_space_file': '',
-        'TimeLag': int(np.ceil(np.max(np.abs(modelParams['delays']))))
-    }
+    DS = strflab2DS(globalDat['stim'], globalDat['resp'], globalDat['weight'], globalDat['groupIdx'], modelParams['outputPath'])
+
+    modelParams['DS'] = DS
+    modelParams['NBAND'] = globalDat['stim'].shape[1]
     
     # run direct fit
-    strfFiles = direct_fit(params)
+    strfFiles = direct_fit(modelParams)
     
     # get computed stim and response means
-    svars = np.load(os.path.join(options['outputDir'], 'stim_avg.npz'), allow_pickle=True)
+    svars = np.load(os.path.join(modelParams['outputPath'], 'stim_avg.npz'), allow_pickle=True)
     stimAvg = svars['stim_avg']
     respAvg = svars['constmeanrate']
     tvRespAvg = svars['Avg_psth']
@@ -88,17 +47,13 @@ def trnDirectFit(modelParams=None, datIdx=None, options=None, globalDat=None, *a
     numSamples = len(DS)
     
     # compute some indices to use later
-    halfIndx = params['TimeLag'] + 1
+    halfIndx = modelParams['TimeLag'] + 1
     startIndx = halfIndx + round(np.min(modelParams['delays']))
     endIndx = halfIndx + round(np.max(modelParams['delays']))
     strfRng = range(startIndx-1, endIndx)
     
-    # subtract mean off of stimulus (because direct fit does this)
-    for k in range(int(globDat['stim'].shape[0])):
-        globDat['stim'][k,:] -= stimAvg.T
-
     # Make a smoothing window to calculate and R2 as well
-    wHann = windows.hann(params['smooth_rt'], sym=True)  # The 31 ms (number of points) hanning window used to smooth the PSTH
+    wHann = windows.hann(modelParams['smooth_rt'], sym=True)  # The 31 ms (number of points) hanning window used to smooth the PSTH
     wHann = wHann / sum(wHann)
 
     
@@ -108,7 +63,7 @@ def trnDirectFit(modelParams=None, datIdx=None, options=None, globalDat=None, *a
     bestStrf = -1
     bestTol = -1
     bestSparseness = -1
-    spvals = options['sparsenesses']
+    spvals = modelParams['sparsenesses']
 
     # Make space for R2CV
     R2CV = np.zeros((len(strfFiles), len(spvals)))
@@ -137,12 +92,14 @@ def trnDirectFit(modelParams=None, datIdx=None, options=None, globalDat=None, *a
                 smoothedMeanStrfJN = df_fast_filter_filter(strfsJN[:, :, p], strfsJN_std[:, :, p], spvals[q])
                 strfToUse = smoothedMeanStrfJN[:, strfRng]
                 
-                srRange = np.where(globDat['groupIdx'] == p)[0]
-                stim = globDat['stim'][srRange, :]
-                rresp = globDat['resp'][srRange]
+                srRange = np.where(globalDat['groupIdx'] == p)[0]
+
+                # Subtracting the means here without changing globDat.
+                stim = globalDat['stim'][srRange, :] - stimAvg
 
                 # Skip the very short stims to perform the coherence.
-                if (len(rresp) < options['infoWindowSize']) or not np.any(rresp):
+                rresp = globalDat['resp'][srRange]
+                if (len(rresp) < modelParams['infoWindowSize']) or not np.any(rresp):
                     continue
 
                 gindx = np.ones((1, stim.shape[0]))
@@ -150,15 +107,18 @@ def trnDirectFit(modelParams=None, datIdx=None, options=None, globalDat=None, *a
                 #compute the prediction for the held out stimulus
                 mresp = conv_strf(stim, modelParams['delays'], np.real(strfToUse), gindx)
 
-                if not options['timeVaryingPSTH']:
+                if not modelParams['timevary_PSTH']:
                     mresp = mresp + respAvg
                 else:
                     mresp = mresp + tvRespAvg[p, :len(mresp)]
                 
-                #compute coherence and info across pairs
+                #compute coherence and info across pairs - this is not quite correct because it is not weighted properly...
                 # doing this for single trials
                 # for (data in rawData):
-                cStruct = compute_coherence_mean(mresp, rresp, options['respSampleRate'], options['infoFreqCutoff'], options['infoWindowSize'] )
+
+
+
+                cStruct = compute_coherence_mean(mresp, rresp, modelParams['respsamprate'], modelParams['infoFreqCutoff'], modelParams['infoWindowSize'] )
                 infoSum += np.real(cStruct['info'])*len(mresp)
                 infoTBins += len(mresp)
 
@@ -188,11 +148,13 @@ def trnDirectFit(modelParams=None, datIdx=None, options=None, globalDat=None, *a
             # This is a "one-trial" CV
             R2CV[k,q] = 1.0 - y_error/y_var
 
-            print(f"Tolerance={options['tolerances'][k]}, Sparseness={spvals[q]}, Avg. Prediction Info={avgInfo}, R2CV={R2CV[k,q]}")
+            modelParams['funcName'] = 'trnDirectFit'
+
+            print(f"Tolerance={modelParams['Tol_val'][k]}, Sparseness={spvals[q]}, Avg. Prediction Info={avgInfo}, R2CV={R2CV[k,q]}")
 
             # did this sparseness do better?
             if avgInfo > bestInfoVal:
-                bestTol = options['tolerances'][k]
+                bestTol = modelParams['Tol_val'][k]
                 bestSparseness = spvals[q]
                 bestInfoVal = avgInfo
                 bestStrf = smoothedMeanStrfToUse
@@ -205,18 +167,16 @@ def trnDirectFit(modelParams=None, datIdx=None, options=None, globalDat=None, *a
     
     modelParams['w1'] = bestStrf
     modelParams['R2CV'] = R2CV
+    modelParams['stimAvg'] = stimAvg
     
-    if not options['timeVaryingPSTH']:
+    if not modelParams['timevary_PSTH']:
         modelParams['b1'] = respAvg
     else:
         modelParams['b1'] = tvRespAvg[p, :mresp.shape[1]]
 
-
-     
-    return modelParams, options
+ 
+    return modelParams
     
-
-
 
 
 def df_fast_filter_filter(forward, forwardJN_std, nstd):

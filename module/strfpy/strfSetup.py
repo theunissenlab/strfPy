@@ -190,7 +190,6 @@ def strfData(stim, resp, weight, groupIdx=None):
     dataHash = respHash + stimHash * 10 ** magdif
 
     # Set global variable
-    global globDat
     globDat = {
         'stim': stim,
         'resp': resp,
@@ -202,51 +201,6 @@ def strfData(stim, resp, weight, groupIdx=None):
 
 
     return globDat
-
-
-
-def strfOpt(strf, datIdx, options,globDat,  *args):
-    """
-    strfOpt is a helper function which facilitates the training of
-    STRFs. It calls any of the middle-layer training functions to
-    optimize the parameters, and passes a dictionary to govern the
-    optimization behaviour.
-
-    vbnet
-    Copy code
-    Args:
-        strf: model structure obtained via upper level *Init functions
-        datIdx: a vector containing indices of the samples to be used in the 
-                fitting.
-        options: A dictionary which specifies and determines the behavior of the
-                training function. (ex. options['funcName']='resampBootstrap').
-                Specific values for OPTIONS depend on which algorithm
-                is used.  Type help trn* for that algorithm's
-                options parameters.
-        *args: additional arguments to be passed to the training function
-
-    Returns:
-        strf: structure containing model fit by the training algorithm
-        options: option dictionary, with any additional fields added by fitting algorithm
-        *varargs: additional arguments returned by the training function
-    """
-
-
-    s = globals()[options['funcName']](strf, datIdx, options, globDat, 1)
-   
-    strf = s[0]
-
-    if len(s) > 1:
-        options = s[1]
-
-        # If there are additional arguments, extract them
-        nextra = len(s) - 2
-        if nextra > 0:
-            varargs = s[2:]
-            return strf, options, *varargs
-
-    return strf, options
-
 
 
 

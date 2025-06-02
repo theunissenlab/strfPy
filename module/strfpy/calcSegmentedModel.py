@@ -546,7 +546,7 @@ def generate_x(pair, feature, basis_args = None, xGen = 'Kernel', nPoints=200, n
     # "LG" is Laguerre Polynomials
     # "DG" is difference of Guassians
 
-    if xGen == 'Kernel':
+    if (xGen == 'Kernel') | (xGen == 'Kernel2') :
         x = arbitrary_kernel(
         pair,
         nPoints=nPoints,
@@ -906,6 +906,12 @@ def nearDiagInv(diagA, u, s, v, tol=0):
 
     return Ainv
 
+def nearDiagInv2(Cxx, diagCxx, tol=0):
+    '''Alternative to neadDiagInv2 that interporlates between the inverse of Cxx and of diagCxx'''
+
+    Ainv = np.linalg.inv(Cxx*(1/(1+tol)) + diagCxx*(tol/(1+tol)))
+    return Ainv
+
 def generate_event_pca_feature(srData, event_types, feature, pca = None, npcs=20):
 
     # first use PCA to reduce dim of the features'
@@ -981,7 +987,7 @@ store_error = False):
         nSets = len(pair_train_set) 
 
     # Find the dimensionality of the x feature space.  For kernel it is just the number of points
-    if kernel == 'Kernel':
+    if (kernel == 'Kernel') | (kernel =='Kernel2'):
         nFeatures = nPoints
     else:
         pair = srData["datasets"][pair_train_set[0]]
@@ -1047,6 +1053,7 @@ store_error = False):
         # Auto-Covariance and Cross-Covariances matrices, the square roots multiply to give a weight to the squares
         Cxx[iS,:,:] = ((x-xavg[iS,:,:])*(np.sqrt(yw)).T) @ ((x-xavg[iS,:,:])*(np.sqrt(yw)).T).T
         Cxy[iS,:] = ((x-xavg[iS,:,:])*(np.sqrt(yw)).T) @ ((y-yavg[iS])*(np.sqrt(yw)))
+        # Cxy[iS,:] = (x-xavg[iS,:,:]) @ ((y-yavg[iS])*yw)
 
     CxxAll = np.sum(Cxx, axis=0)
     CxyAll = np.sum(Cxy, axis=0)
@@ -1055,7 +1062,7 @@ store_error = False):
     for iS in range(nSets):
         Cxx[iS,:,:] = (CxxAll - Cxx[iS,:,:])/(countAll - count[iS])
         Cxy[iS,:] = (CxyAll - Cxy[iS,:])/(countAll - count[iS])
-        if (kernel == 'Kernel'):
+        if ( (kernel == 'Kernel') | (kernel == 'Kernel2') ):
             CxxNorm[iS] = np.linalg.norm(np.squeeze(Cxx[iS, :, :]-np.diag(np.diag(np.squeeze(Cxx[iS, :, :])))))
         else:
             CxxNorm[iS] = np.linalg.norm(np.squeeze(Cxx[iS, :, :]))
@@ -1072,7 +1079,7 @@ store_error = False):
     hJN = np.zeros(Cxy.shape)
     nb = Cxx.shape[1]
 
-    if (kernel == 'Kernel'):
+    if ( kernel == 'Kernel' ):
         for iS in range(nSets):
             diagCxx = np.diag(np.diag(np.squeeze(Cxx[iS,:,:])))
             u[iS,:,:],s[iS,:],v[iS,:,:] = np.linalg.svd(Cxx[iS,:,:]-diagCxx)
@@ -1094,6 +1101,10 @@ store_error = False):
             if (kernel == 'Kernel'):
                 diagCxx = np.diag(np.diag(np.squeeze(Cxx[iS,:,:])))
                 Cxx_inv = nearDiagInv(diagCxx, u[iS,:,:], s[iS,:], v[iS,:,:], tol=tolval)
+                hJN[iS,:] = Cxx_inv @ Cxy[iS,:]
+            elif (kernel == 'Kernel2'):
+                diagCxx = np.diag(np.diag(np.squeeze(Cxx[iS,:,:])))
+                Cxx_inv = nearDiagInv2(np.squeeze(Cxx[iS,:,:]), diagCxx,  tol=tolval)
                 hJN[iS,:] = Cxx_inv @ Cxy[iS,:]
             else:
                 is_mat = np.zeros((nb, nb))
@@ -1167,6 +1178,10 @@ store_error = False):
         diagCxx = np.diag(np.diag(np.squeeze(CxxAll)))
         uAll,sAll,vAll = np.linalg.svd(CxxAll-diagCxx)
         CxxAll_inv = nearDiagInv(diagCxx, uAll, sAll, vAll, tol=ranktol[itMax])
+        hJNAll = CxxAll_inv @ CxyAll
+    elif (kernel == 'Kernel2'):
+        diagCxx = np.diag(np.diag(np.squeeze(CxxAll)))
+        CxxAll_inv = nearDiagInv2(np.squeeze(CxxAll), diagCxx, tol=ranktol[itMax])
         hJNAll = CxxAll_inv @ CxyAll
     else:
         uAll,sAll,vAll = np.linalg.svd(CxxAll)

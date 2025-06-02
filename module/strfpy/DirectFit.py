@@ -9,196 +9,70 @@ import scipy.signal as sio
 
 from .cache import df_create_stim_cache_file, df_create_spike_cache_file, df_checksum, df_dir_of_caches
 from .calcAvg import df_cal_AVG
-from .calcAutoCorr import df_cal_AutoCorr, df_cal_AutoCorrSep
+from .calcAutoCorr import df_cal_AutoCorrJN, df_cal_AutoCorrSep
 from .calcCrossCorr import df_cal_CrossCorr, df_fft_AutoCrossCorr
 from .calcStrf_script import calcStrfs
 
 
 
 def direct_fit(params):
-    global DF_PARAMS
-    DF_PARAMS = params
 
+    # get paramters used frequently
     DS = params['DS']
     NBAND = params['NBAND']
     Tol_val = params['Tol_val']
-    setSep = params['setSep']
     TimeLag = params['TimeLag']
     TimeLagUnit = params['TimeLagUnit']
-    timevary_PSTH = params['timevary_PSTH']
-    smooth_rt = params['smooth_rt']
     ampsamprate = params['ampsamprate']
-    respsamprate = params['respsamprate']
 
     # the intermediate result path
     outputPath = params['outputPath']
-
-    # OnlyOne flag used for avoiding overfitting
-    OnlyOne = 1
 
     # =========================================================
     # calculate avg. of stimulus and response that used later
     # =========================================================
 
-    stim_avg, avg_psth, psth, errFlg = df_cal_AVG(DS, DF_PARAMS)
+    stim_avg, avg_psth, psth, errFlg = df_cal_AVG(DS, params)
     # The psth is not normalized - i.e it is the sum of all trials and trials can have variable length - use weights to normalize
-
-    # Check if cal_Avg ends normally
-
-    if errFlg == 1:
-        print('df_cal_AVG ended with error!')
 
     # =========================================================
     # Now calculating stimulus AutoCorr.
     # =========================================================
-
-    if ampsamprate is None:
-        ampsamprate = 1000
 
     if TimeLagUnit == 'msec':
         twindow = [-round(TimeLag*ampsamprate/1000), round(TimeLag*ampsamprate/1000)]
     elif TimeLagUnit == 'frame':
         twindow = [-TimeLag, TimeLag]
 
-    if setSep == 0:  # Nonseparable space-time algorithm
-        print('Now calculating stim autocorrelation')
-        do_long_way = 1
-        cached_dir, maxsize = df_dir_of_caches()
-        autocorr_start_time = time.process_time()
-        hashes_of_stims = df_create_stim_cache_file(outputPath, DS)
+    print('Now calculating stim auto-correlation')
+    autocorr_start_time = time.process_time()
+    CS, CS_JN = df_cal_AutoCorrJN(DS, stim_avg, twindow, NBAND, params)
+    autocorr_end_time = time.process_time()
+    params['CS'] = CS
+    params['CS_JN'] = CS_JN
+    print('The auto-correlation took', autocorr_end_time - autocorr_start_time, 'seconds.')
 
-        # if cached_dir != 'null':
-        #     do_long_way = 0
-        #     loaded, order = np.sort(hashes_of_stims)  # Sort to make the checksum invarient to dataset shuffling
-        #     n_trial_array = get_ntrials(DS)
-        #     checksum_for_autocorr_calc = df_checksum(df_load_function_text('df_cal_AutoCorr'), loaded, n_trial_array[order], stim_avg, twindow, NBAND)  # Sort the ntrial array the same way as the stimuli
-        #     CS, errFlg = do_cached_calc_checksum_known('df_cal_AutoCorr', checksum_for_autocorr_calc, 1, DS, stim_avg, twindow, NBAND)
-        # else:
-        CS, errFlg = df_cal_AutoCorr(1, DS, stim_avg, twindow, NBAND, PARAMS=DF_PARAMS)
+    # =========================================================
+    # Now calculating stimulus-response CrossCorr.
+    # =========================================================
+    print('Now calculating stim-response cross-correlation')
+    CSR, CSR_JN, errFlg = df_cal_CrossCorr(DS, params, stim_avg, avg_psth, psth, twindow, NBAND)
+    params['CSR'] = CSR
+    params['CSR_JN'] = CSR_JN
+    crosscorr_end_time = time.process_time()
+    print('The cross-correlation took', crosscorr_end_time - autocorr_end_time, 'seconds.')
 
-        autocorr_end_time = time.process_time()
-        print('The autocorrelation took', autocorr_end_time - autocorr_start_time, 'seconds.')
-        currentPath = os.getcwd()
-        if outputPath is not None and outputPath != '':
-            os.chdir(outputPath)
-        else:
-            print('Saving output to Output Dir.')
-            os.makedirs('Output', exist_ok=True)
-            os.chdir('Output')
-            outputPath = os.getcwd()
+    # =========================================================
+    # Now calculating the STRFs.
+    # =========================================================
 
-        np.savez('Stim_autocorr.npz', CS=CS)
-        os.chdir(currentPath)
+    print('Calculating strfs for each tol value.')
 
-        # Check if df_cal_AutoCorr ends normally
-        if errFlg == 1:
-            print('df_cal_AutoCorr ended in failure!')
-
-        # Done calculation of stimulus AutoCorr
-
-        # Now calculating stimulus spike CrossCorr
-        # Let's assume that if the user has caching on and is using the GUI
-        # that they might want to evaluate df_cal_CrossCorr more than once; so:
-        # Main code
-        cached_dir = "null"
-
-        # cache_crosscorr = not strcmp(cached_dir, 'null')  # This is the flag to say if we'll cache results specific to the current spike train.
-
-        hashes_of_stims = df_create_stim_cache_file(outputPath, DS)
-        hashes_of_spikes = df_create_spike_cache_file(outputPath, DS)
-
-        smooth_rt = 41 if smooth_rt is None else smooth_rt
-
-        # if psth_option is None:
-        if timevary_PSTH == 0:
-            psth_option = 0
-        else:
-            psth_option = 1
-
-        # DID NOT IMPLEMENT:
-        # checksum_CrossCorr = df_checksum(df_load_function_text('df_cal_CrossCorr'), hashes_of_spikes, hashes_of_stims, twindow, smooth_rt, psth_option)
-
-        if not cached_dir == 'null':
-            pass
-            # #[CSR, CSR_JN, errFlg]= do_cached_calc_checksum_known('df_cal_CrossCorr',checksum_CrossCorr,DS,stim_avg,avg_psth,psth,twindow,NBAND);
-            # CSR, CSR_JN, errFlg = df_do_locally_cached_calc_checksum_known(df_get_local_cache_dir(), 'df_cal_CrossCorr', checksum_CrossCorr, DS, stim_avg, avg_psth, psth, twindow, NBAND)
-            # np.save(os.path.join(outputPath, 'StimResp_crosscorr.npy'), CSR)
-            # np.save(os.path.join(outputPath, 'SR_crosscorrJN.npy'), CSR_JN)
-        else:
-            CSR, CSR_JN, errFlg = df_cal_CrossCorr(DS, DF_PARAMS, stim_avg, avg_psth, psth, twindow, NBAND)
-
-        # Check if df_cal_CrossCorr ends normally
-        if errFlg == 1:
-            # set(handles.figure1, 'Pointer', 'Arrow')
-            return
-
-        # Done calculation of stimulus-spike CrossCorr in GUI window
-        print('Calculating strfs for each tol value.')
-
-        calcStrfs(DF_PARAMS, CS, CSR, CSR_JN)
-
-        calculation_endtime = time.process_time()
+    calcStrfs(params, CS, CS_JN, CSR, CSR_JN)
+    calculation_endtime = time.process_time()
         
-        print(f'The STRF calculation took {calculation_endtime - autocorr_start_time} seconds.')
+    print(f'The STRF calculation took {calculation_endtime - crosscorr_end_time} seconds.')
     
-    else: 
-        # Separable space-time algorithm
-        # Provide Space-time separability algorithm to estimate STRF
-        # [CSspace, CStime, errFlg] = df_cal_AutoCorrSep(DS, stim_avg, twindow, NBAND, 1)
-        print('Now calculating stim autocorrelation')
-        do_long_way = 1
-        cached_dir, maxsize = df_dir_of_caches()
-        autocorr_start_time = time.process_time()
-        hashes_of_stims = df_create_stim_cache_file(outputPath, DS)
-
-        if cached_dir != 'null':
-            do_long_way = 0
-            loaded, order = np.sort(hashes_of_stims)  # Sort to make the checksum invarient to dataset shuffling
-            n_trial_array = get_ntrials(DS)
-            checksum_for_autocorr_calc = df_checksum(df_load_function_text('df_cal_AutoCorrSep'), 'df_cal_AutoCorrSep', loaded, n_trial_array[order], stim_avg, twindow, NBAND)  # Sort the ntrial array the same way as the stimuli
-            CSspace, CStime, errFlg = do_cached_calc_checksum_known('df_cal_AutoCorrSep', checksum_for_autocorr_calc, DS, stim_avg, twindow, NBAND, 1)
-        else:
-            CSspace, CStime, errFlg = df_cal_AutoCorrSep(DS, stim_avg, twindow, NBAND, 1)
-
-        autocorr_end_time = time.process_time()
-        print(f'The autocorrelation took {autocorr_end_time - autocorr_start_time} seconds.')
-
-        # Check if df_cal_AutoCorrSep ends normally
-        if errFlg == 1:
-            print('df_cal_AutoCorrSep ended with error!')
-
-        # Calculate cross-correlation between stimuli and spike
-
-
-        #  Let's assume that if the user has caching on and is using the GUI
-        #  that they might want to evaluate df_cal_CrossCorr more than once; so:
-        cache_crosscorr = (cached_dir != 'null')  # This is the flag to say if we'll cache results specific to the current spike train.
-        if 'psth_option' not in locals():
-            if timevary_PSTH == 0:
-                psth_option = 0
-            else:
-                psth_option = 1
-
-        hashes_of_stims = df_create_stim_cache_file(outputPath,DS)
-        hashes_of_spikes = df_create_spike_cache_file(outputPath,DS)
-        checksum_CrossCorr = df_checksum('sep', df_load_function_text('df_cal_CrossCorr'), hashes_of_spikes, hashes_of_stims, twindow, smooth_rt, psth_option)
-
-        if smooth_rt is None or smooth_rt == "":
-            smooth_rt = 41
-
-        if cache_crosscorr:
-            CSR, CSR_JN, errFlg = df_do_locally_cached_calc_checksum_known(df_get_local_cache_dir(), 'df_cal_CrossCorr', checksum_CrossCorr, DS, stim_avg, avg_psth, psth, twindow, NBAND)
-            np.save(os.path.join(outputPath, 'StimResp_crosscorr.mat'), 'CSR')
-            np.save(os.path.join(outputPath, 'SR_crosscorrJN.mat'), 'CSR_JN')
-        else:
-            CSR, CSR_JN, errFlg = df_cal_CrossCorr(DS, stim_avg, avg_psth, psth, twindow, NBAND)
-
-        # Check if df_cal_CrossCorr ends normally
-        if errFlg != 1:
-            # Now call calStrfSep_script to calculate STRF, STRF_JN, STRF_JNstd for each tol value
-            
-            calcfd = os.path.join(os.getcwd(), 'strfpy', 'calcStrf.py')
-            exec(open(calcfd).read())
 
     strfFiles = [None]*len(Tol_val)
     for k in range(len(Tol_val)):

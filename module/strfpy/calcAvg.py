@@ -216,9 +216,9 @@ def df_cal_AVG(DDS, PARAMS, nband=None, psth_option=None, lin_flag=1, sil_window
         stim_env = df_Check_And_Load(DDS[n]["stimfiles"])
         this_len = stim_env.shape[1]  # get stim duration
         # load response files
-        rawResp = df_Check_And_Load(DDS[n]["respfiles"])   # 
+        rawResp = df_Check_And_Load(DDS[n]["respfiles"])   # This should be in units of spikes/s - averaged across trials 
         # load weight files
-        weight = df_Check_And_Load(DDS[n]["weightfiles"])
+        weight = df_Check_And_Load(DDS[n]["weightfiles"])  # This is the number of of trials at each time point
 
         if isinstance(rawResp, list):
             spiketrain = np.zeros((DDS[n]["ntrials"], this_len))
@@ -253,31 +253,25 @@ def df_cal_AVG(DDS, PARAMS, nband=None, psth_option=None, lin_flag=1, sil_window
             )
             errFlg = 1
             return
-        stim_avg = stim_avg + np.sum(stim_env[:nt] * weight[:nt], axis=1)
-        count_avg = count_avg + np.sum(weight[:nt])
+        stim_avg += np.sum(stim_env[:nt] * weight[:nt], axis=1)
+        count_avg += np.sum(weight[:nt])
 
         # then calculate response_avg
         if DDS[n]["ntrials"] > 1:
             temp = np.sum(
                 psth_rec, axis=1
-            )  # Given that the stimulus auto correlation multiplies by ntrials - this should be sum and not mean... # this needs a check...
+            )  # Given that the stimulus auto correlation multiplies by ntrials - this should be sum and not mean - to be checked... the ntrials might have to be incorporated in weights...
             psth.append(temp[:nt])
         else:
             psth.append(psth_rec[:nt])
         
         allweights.append(weight)
 
-
-        # calculate the total spike/response avg.
-        Avg_psth = Avg_psth + np.sum(psth[n][:nt]*weight[:nt])
+        # calculate the total spike/response avg by performing a weights sum.  The psth is already normalized and in units of spikes/s on average
+        Avg_psth += np.sum(psth[n][:nt]*weight[:nt])
         tot_trials += np.sum(weight[:nt])
 
-
         timevary_psth.append(psth[n].shape[1])
-
-        # clear workspace
-        stim_env = None
-        psth_rec = None
 
     # -------------------------------------------------------
     #  Calculating Time Varying mean firing rate
@@ -346,7 +340,6 @@ def df_cal_AVG(DDS, PARAMS, nband=None, psth_option=None, lin_flag=1, sil_window
         constmeanrate=constmeanrate,
     )
 
-    flat_psth = [item for sublist in psth for item in sublist]
     return stim_avg, Avg_psth_out, psth, errFlg
 
 
