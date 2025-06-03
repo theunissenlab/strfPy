@@ -148,8 +148,6 @@ def trnDirectFit(modelParams, globalDat):
             # This is a "one-trial" CV
             R2CV[k,q] = 1.0 - y_error/y_var
 
-            modelParams['funcName'] = 'trnDirectFit'
-
             print(f"Tolerance={modelParams['Tol_val'][k]}, Sparseness={spvals[q]}, Avg. Prediction Info={avgInfo}, R2CV={R2CV[k,q]}")
 
             # did this sparseness do better?
@@ -168,6 +166,7 @@ def trnDirectFit(modelParams, globalDat):
     modelParams['w1'] = bestStrf
     modelParams['R2CV'] = R2CV
     modelParams['stimAvg'] = stimAvg
+    modelParams['funcName'] = 'trnDirectFit'
     
     if not modelParams['timevary_PSTH']:
         modelParams['b1'] = respAvg

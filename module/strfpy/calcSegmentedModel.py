@@ -1,6 +1,7 @@
 # Dependencies - General Stuff
 import sys
 import os
+import tempfile
 import numpy as np
 import pandas as pd
 import os
@@ -957,7 +958,7 @@ def generate_event_pca_feature(srData, event_types, feature, pca = None, npcs=20
 
 # fitting funcitons
 def fit_seg(
-    srData, nPoints, x_feature, y_feature = 'psth_smooth', y_R2feature = None, kernel = 'Kernel', basis_args = [], nD=2, pair_train_set=None, tol = np.array([0.6, 0.5, 0.4, 0.2, 0.15, 0.100, 0.08, 0.050, 0.010, 0.005, 1e-03]),
+    srData, nPoints, x_feature, y_feature = 'psth_smooth', y_R2feature = None, kernel = 'Kernel', basis_args = [], nD=2, pair_train_set=None, tol = np.array([0.2, 0.1, 0.05, 0.01, 0.005, 0.001, 0.0005, 0.0001, 0]),
 store_error = False):
     """
     Fits a segmented model to the given data using ridge regresseion and leave one out cross-validation
@@ -1052,8 +1053,8 @@ store_error = False):
         
         # Auto-Covariance and Cross-Covariances matrices, the square roots multiply to give a weight to the squares
         Cxx[iS,:,:] = ((x-xavg[iS,:,:])*(np.sqrt(yw)).T) @ ((x-xavg[iS,:,:])*(np.sqrt(yw)).T).T
-        Cxy[iS,:] = ((x-xavg[iS,:,:])*(np.sqrt(yw)).T) @ ((y-yavg[iS])*(np.sqrt(yw)))
-        # Cxy[iS,:] = (x-xavg[iS,:,:]) @ ((y-yavg[iS])*yw)
+        # Cxy[iS,:] = ((x-xavg[iS,:,:])*(np.sqrt(yw)).T) @ ((y-yavg[iS])*(np.sqrt(yw)))
+        Cxy[iS,:] = (x-xavg[iS,:,:]) @ ((y-yavg[iS])*yw)  # This matches how we do strfs
 
     CxxAll = np.sum(Cxx, axis=0)
     CxyAll = np.sum(Cxy, axis=0)
@@ -1111,7 +1112,7 @@ store_error = False):
                 # ridge regression - regularized normal equation
                 for ii in range(nb):
                     is_mat[ii,ii] = 1.0/(s[iS, ii] + tolval)       
-                hJN[iS,:] = v[iS, :, :] @ is_mat @ (u[iS, :, :] @ Cxy[iS,:])
+                hJN[iS,:] = v[iS, :, :].T @ is_mat @ (u[iS, :, :].T @ Cxy[iS,:])
 
             # Find x and actual y for leave out set to asses fit
             pair = srData["datasets"][iSet]
@@ -1187,7 +1188,7 @@ store_error = False):
         uAll,sAll,vAll = np.linalg.svd(CxxAll)
         for ii in range(nb):
             is_mat[ii,ii] = 1.0/(sAll[ii] + ranktol[itMax])
-        hJNAll = vAll @ is_mat @ (uAll @ CxyAll)
+        hJNAll = vAll.T @ is_mat @ (uAll.T @ CxyAll)
 
     # The bias term
     b0 = -hJNAll @ (xsumAll/countAll) + (ysumAll/countAll)
@@ -1711,11 +1712,13 @@ def process_unit(nwb_file, unit_name):
     segmentBuffer = 30 # ms to add at the beginning of each segment
     nLaguerre = 25 # number of laguerre functions to use
     feature = 'spect_windows'
+    feature2 = 'mps_windows'
     event_types = 'onoff_feature'
     nPoints = 150 # number of points to use in the kernel
-    strfLength = 100
+    strfLength = 200 # number of points in the STRF in sampling rate - 200 ms for Theunissen data
     nPCs = 20
     nDOGS = 5
+    smooth_rt = 31 # smoothing window for the R2 calculation for the strf.  The segmented model is also fitted on a smooth_psth with the same time window.
 
     # Calculate spectrogram, smooth psth and make a new object the stimulus-response Data: srData
     srData = preprocSound.preprocess_sound_nwb(nwb_file, 'playback_trials', unit_name, preprocess_type='ft')
@@ -1736,6 +1739,7 @@ def process_unit(nwb_file, unit_name):
 
     # first use PCA to reduce dim of the features'
     pca_spect = generate_event_pca_feature(srData, event_types, feature, pca = None, npcs=nPCs)
+    pca_mps = generate_event_pca_feature(srData, event_types, feature2, pca = None, npcs=nPCs)
 
     # Calculate the segmented encoding models for spectrograms, LGs and DOGS.
     segIDModelLG = fit_seg(srData, nPoints, feature, y_feature = 'error_Kernel', y_R2feature = 'psth_smooth', kernel = 'LG', basis_args =laguerre_args, nD=nLaguerre) 
@@ -1743,8 +1747,15 @@ def process_unit(nwb_file, unit_name):
     segIDModelDG = fit_seg(srData, nPoints, feature, y_feature = 'error_Kernel', y_R2feature = 'psth_smooth', kernel = 'DG', basis_args =DOGS_args, nD=nDOGS)
     r2segIDModelDG = np.max(segIDModelDG['R2CV'])
 
+    # Repeat using the MPS
+    segIDModelLGMPS = fit_seg(srData, nPoints, feature2, y_feature = 'error_Kernel', y_R2feature = 'psth_smooth', kernel = 'LG', basis_args =laguerre_args, nD=nLaguerre) 
+    r2segIDModelLGMPS = np.max(segIDModelLGMPS['R2CV'])
+    segIDModelDGMPS = fit_seg(srData, nPoints, feature2, y_feature = 'error_Kernel', y_R2feature = 'psth_smooth', kernel = 'DG', basis_args =DOGS_args, nD=nDOGS)
+    r2segIDModelDGMPS = np.max(segIDModelDGMPS['R2CV'])
+
     # The Classic STRF
-    # Initialize the linear time invariant model
+
+    # Initialize the linear time invariant model. Here we choose 200 delay points 
     nStimChannels = srData['nStimChannels']
     strfDelays = np.arange(strfLength)
     modelParams = strfSetup.linInit(nStimChannels, strfDelays)
@@ -1753,12 +1764,23 @@ def process_unit(nwb_file, unit_name):
     allstim, allresp, allweights, groupIndex = strfSetup.srdata2strflab(srData, useRaw = False)
     globDat = strfSetup.strfData(allstim, allresp, allweights, groupIndex)
 
-    # Create default optimization options structure
-    params, optOptions = trnDirectFit.trnDirectFit()
-    optOptions['display'] = 1
-    datIdx = np.arange(len(allresp)) # the indexes of training data (all of it)
-    modelParamsTrained, options = strfSetup.strfOpt(modelParams, datIdx, optOptions, globDat)
-    r2STRF = modelParamsTrained['R2CV'].max()
+    # Additional model options
+    modelParams['Tol_val'] = [0.100, 0.050, 0.010, 0.005, 1e-03, 1e-04, 5e-05, 0]  # These are the same as the default in fit_seg
+    modelParams['sparsenesses'] = [0, 1, 2, 3, 4, 5, 6, 7]   # The sparseness is a lasso like regularization
+    modelParams['timevary_PSTH'] = 0           # This is to calculate a time-varying mean across all stim
+    modelParams['smooth_rt'] = smooth_rt
+    modelParams['ampsamprate'] = srData['stimSampleRate']
+    modelParams['respsamprate'] = srData['respSampleRate']
+    modelParams['infoFreqCutoff'] = 100        # For the coherence-based Info calculation this is the frequency CutOff in Hz
+    modelParams['infoWindowSize'] = 0.250      # Window size in s for the coherence estimate
+    modelParams['TimeLagUnit'] = 'frame'       # Can be set to 'frame' or 'msec'
+    modelParams['outputPath'] = tempfile.gettempdir()
+    modelParams['TimeLag'] =  int(np.ceil(np.max(np.abs(modelParams['delays']))))
+ 
+
+    # Run direct fit optimization on all of the data
+    modelParams = trnDirectFit.trnDirectFit(modelParams, globDat)
+    r2STRF = modelParams['R2CV'].max()
 
     result = {
         'nwb_file': nwb_file,
@@ -1769,11 +1791,16 @@ def process_unit(nwb_file, unit_name):
         'Laguerre_args' :  laguerre_args,
         'dogs_args' : DOGS_args,
         'pca_spect' : pca_spect,
+        'pca_mps' : pca_mps,
         'segIDModelLG': segIDModelLG,
         'r2segIDModelLG' : r2segIDModelLG,
-        'segIDModelDG': segIDModelLG,
+        'segIDModelDG': segIDModelDG,
         'r2segIDModelDG' : r2segIDModelDG,
-        'strfModel' : modelParamsTrained,
+        'segIDModelLGMPS': segIDModelLGMPS,
+        'r2segIDModelLGMPS' : r2segIDModelLGMPS,
+        'segIDModelDG': segIDModelDGMPS,
+        'r2segIDModelDG' : r2segIDModelDGMPS,
+        'strfModel' : modelParams,
         'r2STRF' : r2STRF
     }
     
