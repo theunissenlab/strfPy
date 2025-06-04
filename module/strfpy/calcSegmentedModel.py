@@ -1,15 +1,8 @@
 # Dependencies - General Stuff
-import sys
-import os
 import tempfile
 import numpy as np
-import pandas as pd
 import os
-from pathlib import Path
 import matplotlib.pyplot as plt
-import matplotlib.animation as animation
-from matplotlib.patches import Rectangle
-from glob import glob
 from scipy.signal import windows, fftconvolve
 # from scipy.io import wavfile
 from scipy.special import genlaguerre
@@ -17,9 +10,6 @@ from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
 from sklearn.decomposition import PCA
 from sklearn.linear_model import RidgeCV
-import seaborn as sns
-from functools import partial
-from statistics import mode
 
 # Depednecies from Theunissen Lab
 # from soundsig.sound import BioSound
