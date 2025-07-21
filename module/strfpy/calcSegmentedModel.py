@@ -537,7 +537,7 @@ def generate_x(pair, feature, basis_args = None, xGen = 'Kernel', nPoints=200, n
     # "LG" is Laguerre Polynomials
     # "DG" is difference of Guassians
 
-    if (xGen == 'Kernel') | (xGen == 'Kernel2') :
+    if (xGen == 'Kernel') | (xGen == 'Kernel2') | (xGen == 'Kernel0') :
         x = arbitrary_kernel(
         pair,
         nPoints=nPoints,
@@ -958,7 +958,7 @@ store_error = False):
     event_types (str): The type of events that define the segmentation
     feature (str): The feature to use. If a pca is used this field will be pca_feature
     kernel (str): a string specifying the kernel type.  Options are 'Kernel', 'LG', 'DG'.
-                'Kernel' : arbitrary impulse function
+                'Kernel' : arbitrary impulse function ('Kernel2' uses a different reg, 'Kernel0' is straight ridge)
                 'DG' : difference of gaussians convolutional kernel
                 'LG' : Laguerre polynomials convolutional kernel
     basis_args: arguments for the DG or LG kernels
@@ -978,7 +978,7 @@ store_error = False):
         nSets = len(pair_train_set) 
 
     # Find the dimensionality of the x feature space.  For kernel it is just the number of points
-    if (kernel == 'Kernel') | (kernel =='Kernel2'):
+    if (kernel == 'Kernel') | (kernel =='Kernel2') | (kernel == 'Kernel0'):
         nFeatures = nPoints
     else:
         pair = srData["datasets"][pair_train_set[0]]
