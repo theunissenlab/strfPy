@@ -1151,7 +1151,7 @@ store_error = False):
         y_var = simple_sum_yy/simple_sum_count - y_mean**2
         y_error = simple_sum_error/simple_sum_count
 
-        # This is a "one-trial" CV
+        # This is not a "one-trial" CV
         R2CV[it] = 1.0 - y_error/y_var
      
     # Find the best tolerance level, i.e. the ridge penalty hyper-parameter
@@ -1716,10 +1716,18 @@ def process_unit(nwb_file, unit_name):
 
     # Estimate the single trial SNR for this data set
     snr = preprocSound.estimate_SNR(srData)
-    evOne= snr/(snr + 1)     # The expected variance (R2-ceiling) for one trial
+    evOne= snr/(snr + 1)     # The expected variance (R2-ceiling) for one trial - not used here
+    r2num = 0
+    r2den = 0
+    for pair in srData["datasets"]:
+        yw = pair["resp"]["weights"]
+        r2num += np.sum(snr*yw)
+        r2den += np.sum(1+snr*yw)
+
+    EV = r2num/r2den
 
     # Fit the segmentation (on-off here) kernel (impulse response)
-    segModel = fit_seg(srData, nPoints, x_feature = event_types, y_feature = 'psth_smooth', kernel = 'Kernel', nD=2, tol=np.array([0.1, 0.01, 0.001, 0.0001]), store_error = True  )
+    segModel = fit_seg(srData, nPoints, x_feature = event_types, y_feature = 'psth_smooth', kernel = 'Kernel0', nD=2, tol=np.array([0.1, 0.01, 0.001, 0.0001]), store_error = True  )
     learned_conv_kernel = segModel['weights'].reshape(2, nPoints)
     r2segModel = np.max(segModel['R2CV'])
 
@@ -1732,15 +1740,15 @@ def process_unit(nwb_file, unit_name):
     pca_mps = generate_event_pca_feature(srData, event_types, feature2, pca = None, npcs=nPCs)
 
     # Calculate the segmented encoding models for spectrograms, LGs and DOGS.
-    segIDModelLG = fit_seg(srData, nPoints, feature, y_feature = 'error_Kernel', y_R2feature = 'psth_smooth', kernel = 'LG', basis_args =laguerre_args, nD=nLaguerre) 
+    segIDModelLG = fit_seg(srData, nPoints, feature, y_feature = 'error_Kernel0', y_R2feature = 'psth_smooth', kernel = 'LG', basis_args =laguerre_args, nD=nLaguerre) 
     r2segIDModelLG = np.max(segIDModelLG['R2CV'])
-    segIDModelDG = fit_seg(srData, nPoints, feature, y_feature = 'error_Kernel', y_R2feature = 'psth_smooth', kernel = 'DG', basis_args =DOGS_args, nD=nDOGS)
+    segIDModelDG = fit_seg(srData, nPoints, feature, y_feature = 'error_Kernel0', y_R2feature = 'psth_smooth', kernel = 'DG', basis_args =DOGS_args, nD=nDOGS)
     r2segIDModelDG = np.max(segIDModelDG['R2CV'])
 
     # Repeat using the MPS
-    segIDModelLGMPS = fit_seg(srData, nPoints, feature2, y_feature = 'error_Kernel', y_R2feature = 'psth_smooth', kernel = 'LG', basis_args =laguerre_args, nD=nLaguerre) 
+    segIDModelLGMPS = fit_seg(srData, nPoints, feature2, y_feature = 'error_Kernel0', y_R2feature = 'psth_smooth', kernel = 'LG', basis_args =laguerre_args, nD=nLaguerre) 
     r2segIDModelLGMPS = np.max(segIDModelLGMPS['R2CV'])
-    segIDModelDGMPS = fit_seg(srData, nPoints, feature2, y_feature = 'error_Kernel', y_R2feature = 'psth_smooth', kernel = 'DG', basis_args =DOGS_args, nD=nDOGS)
+    segIDModelDGMPS = fit_seg(srData, nPoints, feature2, y_feature = 'error_Kernel0', y_R2feature = 'psth_smooth', kernel = 'DG', basis_args =DOGS_args, nD=nDOGS)
     r2segIDModelDGMPS = np.max(segIDModelDGMPS['R2CV'])
 
     # The Classic STRF
@@ -1775,7 +1783,8 @@ def process_unit(nwb_file, unit_name):
     result = {
         'nwb_file': nwb_file,
         'unit' : unit_name,
-        'r2Ceil' : evOne,
+        'r2Ceil' : EV,
+        'snr' : snr,
         'segModel' : segModel,
         'r2segModel' : r2segModel,
         'Laguerre_args' :  laguerre_args,

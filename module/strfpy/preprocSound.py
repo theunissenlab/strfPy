@@ -37,8 +37,9 @@ def weighted_corr(x, y, w):
     return weighted_cov(x, y, w) / np.sqrt(weighted_cov(x, x, w) * weighted_cov(y, y, w))
 
 def Pearson_r(x,y):
-    "Pearson Correlation Coefficient"
-    return np.sum((x-np.mean(x))*(y-np.mean(y)))/np.sqrt(np.sum((x-np.mean(x))**2)*np.sum((y-np.mean(y))**2))
+    "Pearson Correlation Coefficient assuming x and y have the same mean"
+    xyMean = (np.mean(x)+np.mean(y))/2
+    return np.sum((x-xyMean)*(y-xyMean))/np.sqrt(np.sum((x-xyMean)**2)*np.sum((y-xyMean)**2))
 
 
 def preprocess_sound_raw_nospike(stim_lookup, all_trials, preprocess_type='ft', stim_params={}):
@@ -1080,7 +1081,9 @@ def estimate_SNR(srData, smWindow=31):
     wHann = windows.hann(smWindow, sym=True)   # The 21 ms (number of points) hanning window used to smooth the PSTH
     wHann = wHann/sum(wHann)
 
-    totSNR = 0
+
+    totS2 = 0
+    totN2 = 0
     totWeight = 0
 
     for iSet in range(pairCount):
@@ -1115,17 +1118,31 @@ def estimate_SNR(srData, smWindow=31):
         # Smooth the psth halves, cross-correlate and estimate the unscaled trial SNR
         psth1 = np.convolve(psth1, wHann, mode='same')
         psth2 = np.convolve(psth2, wHann, mode='same')
+
+        # Calculate response power
+        meanPsth = np.mean(psth1 + psth2)/2
+        respPower = np.sum((psth1-meanPsth)**2) + np.sum((psth2-meanPsth)**2)
+        respPower *= ntrials/2
         
         # Skip trials where there is no variation
         if ( (np.var(psth1) == 0.0) | (np.var(psth2) == 0.0) ):
             continue
 
         r = Pearson_r(psth1, psth2)
+        snr = (2*r/(1-r))/ntrials
         
-        totSNR += (2*r/(1-r))*nT
+        # totSNR += (2*r/(1-r))*nT
+        if (snr < 0):
+            totN2 += respPower
+        else:
+            N2 = respPower*(1/(1+snr))
+            totS2 += respPower - N2
+            totN2 += N2
+
         totWeight += nT*ntrials
 
-    return totSNR/totWeight
+
+    return totS2/totN2
 
 def calculate_EV(srData, nPoints=200, mult_values=False):
     # iterate through each pair
