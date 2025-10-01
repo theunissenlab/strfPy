@@ -253,7 +253,7 @@ def df_cal_AVG(DDS, PARAMS, nband=None, psth_option=None, lin_flag=1, sil_window
             )
             errFlg = 1
             return
-        stim_avg += np.sum(stim_env[:nt] * weight[:nt], axis=1)
+        stim_avg += np.sum(stim_env[:,:nt] * weight[:nt], axis=1)
         count_avg += np.sum(weight[:nt])
 
         # then calculate response_avg
