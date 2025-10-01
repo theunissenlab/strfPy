@@ -10,6 +10,8 @@ from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
 from sklearn.decomposition import PCA
 from sklearn.linear_model import RidgeCV
+import pynwb as nwb
+import pickle
 
 # Depednecies from Theunissen Lab
 # from soundsig.sound import BioSound
@@ -875,6 +877,76 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
             srData["datasets"][iSet]["events"]["mps_windows"] - mean_mps
         )
 
+from numba import njit
+
+@njit
+def nearDiagInv_optim(diagA, u, s, v, tol=0.0):
+    """
+    Fast Sherman-Morrison-based inverse of near-diagonal matrix using Numba.
+
+    Parameters:
+        diagA : (n, n) ndarray
+            Diagonal matrix (full 2D form, assumed to be diagonal).
+        u : (n, k) ndarray
+            Left singular vectors.
+        s : (k,) ndarray
+            Singular values.
+        v : (k, n) ndarray
+            Right singular vectors.
+        tol : float
+            Regularization term for stability.
+
+    Returns:
+        Ainv : (n, n) ndarray
+            Approximate inverse of A = diagA + u @ diag(s) @ v.
+    """
+    n = diagA.shape[0]
+    k = s.shape[0]
+
+    # Precompute D⁻¹
+    Ainv = np.zeros((n, n), dtype=np.float64)
+    for i in range(n):
+        Ainv[i, i] = 1.0 / diagA[i, i]
+
+    # uc[:, i] = s[i] * u[:, i]
+    for i in range(k):
+        weight = s[i] / (s[i] + tol)
+        ue = np.zeros((n, 1))
+        ve = np.zeros((1, n))
+
+        for j in range(n):
+            ue[j, 0] = s[i] * u[j, i]
+            ve[0, j] = v[i, j]
+
+        # denom = 1 + ve @ Ainv @ ue
+        temp1 = np.zeros((1, 1))
+        for a in range(n):
+            for b in range(n):
+                temp1[0, 0] += ve[0, a] * Ainv[a, b] * ue[b, 0]
+
+        denom = 1.0 + temp1[0, 0]
+
+        # Only apply update if denom is not zero
+        if denom != 0.0:
+            # temp2 = Ainv @ ue
+            temp2 = np.zeros((n, 1))
+            for a in range(n):
+                for b in range(n):
+                    temp2[a, 0] += Ainv[a, b] * ue[b, 0]
+
+            # temp3 = ve @ Ainv
+            temp3 = np.zeros((1, n))
+            for a in range(n):
+                for b in range(n):
+                    temp3[0, b] += ve[0, a] * Ainv[a, b]
+
+            # Ainv -= weight * (temp2 @ temp3) / denom
+            for a in range(n):
+                for b in range(n):
+                    Ainv[a, b] -= weight * temp2[a, 0] * temp3[0, b] / denom
+
+    return Ainv
+
 def nearDiagInv(diagA, u, s, v, tol=0):
     ''' Calculates the regularized inverse of a near diagonal matrix, decomposed into its diagonal element and an SVD of its off-diagonal terms
     diag A: The diagonal componnent of the diagonal matrix in its full matrix form
@@ -948,7 +1020,7 @@ def generate_event_pca_feature(srData, event_types, feature, pca = None, npcs=20
 
 # fitting funcitons
 def fit_seg(
-    srData, nPoints, x_feature, y_feature = 'psth_smooth', y_R2feature = None, kernel = 'Kernel', basis_args = [], nD=2, pair_train_set=None, tol = np.array([0.2, 0.1, 0.05, 0.01, 0.005, 0.001, 0.0005, 0.0001, 0]),
+    srData, nPoints, x_feature, y_feature = 'psth_smooth', y_R2feature = None, kernel = 'Kernel', basis_args = [], nD=2, pair_train_set=None, tol = np.array([0.2, 0.1, 0.05, 0.01, 0.005, 0.001, 0.0005, 0.0001, 0.00001, 0]),
 store_error = False):
     """
     Fits a segmented model to the given data using ridge regresseion and leave one out cross-validation
@@ -988,6 +1060,10 @@ store_error = False):
         nFeatures = x.shape[1]
   
     # 1. Calculate the averages to zero out data
+    all_x = []
+    all_y = []
+    all_yw = []
+
     xavg = np.zeros((nSets,nD*nFeatures, 1))
     count = np.zeros(nSets)
     yavg = np.zeros(nSets)
@@ -1010,6 +1086,11 @@ store_error = False):
         y = y[yw > 0]
         yw = yw[yw > 0]
 
+        all_x.append(x)
+        all_y.append(y)
+        all_yw.append(yw)
+
+
         xavg[iS, :, :] = np.sum(x*yw.T, axis=1, keepdims=True)
         count[iS] = np.sum(yw)
         yavg[iS] = np.sum(y*yw)
@@ -1028,18 +1109,21 @@ store_error = False):
     Cxy = np.zeros((nSets,nD*nFeatures))
 
     for iS, iSet in enumerate(pair_train_set):
-        pair = srData["datasets"][iSet] 
-        x = generate_x(pair, x_feature, basis_args = basis_args, xGen = kernel, nPoints=nPoints, nLaguerre=nD)      
-        y = pair["resp"][y_feature]  
-        if "weights" not in pair["resp"]:
-            yw = np.ones_like(y)
-        else:
-            yw = pair["resp"]["weights"][0:len(y)]
+        # pair = srData["datasets"][iSet] 
+        # x = generate_x(pair, x_feature, basis_args = basis_args, xGen = kernel, nPoints=nPoints, nLaguerre=nD)      
+        # y = pair["resp"][y_feature]  
+        # if "weights" not in pair["resp"]:
+        #     yw = np.ones_like(y)
+        # else:
+        #     yw = pair["resp"]["weights"][0:len(y)]
 
-        x = x[:, 0:len(y)]
-        x = x[:, yw> 0]
-        y = y[yw > 0]
-        yw = yw[yw>0]
+        # x = x[:, 0:len(y)]
+        # x = x[:, yw> 0]
+        # y = y[yw > 0]
+        # yw = yw[yw>0]
+        x = all_x[iS]
+        y = all_y[iS]
+        yw = all_yw[iS]
         
         # Auto-Covariance and Cross-Covariances matrices, the square roots multiply to give a weight to the squares
         Cxx[iS,:,:] = ((x-xavg[iS,:,:])*(np.sqrt(yw)).T) @ ((x-xavg[iS,:,:])*(np.sqrt(yw)).T).T
@@ -1091,7 +1175,7 @@ store_error = False):
             
             if (kernel == 'Kernel'):
                 diagCxx = np.diag(np.diag(np.squeeze(Cxx[iS,:,:])))
-                Cxx_inv = nearDiagInv(diagCxx, u[iS,:,:], s[iS,:], v[iS,:,:], tol=tolval)
+                Cxx_inv = nearDiagInv_optim(diagCxx, u[iS,:,:], s[iS,:], v[iS,:,:], tol=tolval)
                 hJN[iS,:] = Cxx_inv @ Cxy[iS,:]
             elif (kernel == 'Kernel2'):
                 diagCxx = np.diag(np.diag(np.squeeze(Cxx[iS,:,:])))
@@ -1106,17 +1190,22 @@ store_error = False):
 
             # Find x and actual y for leave out set to asses fit
             pair = srData["datasets"][iSet]
-            x = generate_x(pair, x_feature, basis_args = basis_args, xGen = kernel, nPoints=nPoints, nLaguerre=nD)      
-            y = pair["resp"][y_feature]  
-            if "weights" not in pair["resp"]:
-                yw = np.ones_like(y)
-            else:
-                yw = pair["resp"]["weights"][0:len(y)]
 
-            x = x[:, 0:len(y)]
-            x = x[:, yw> 0]
-            y = y[yw > 0]
-            yw = yw[yw >0]
+            # x = generate_x(pair, x_feature, basis_args = basis_args, xGen = kernel, nPoints=nPoints, nLaguerre=nD)      
+            # y = pair["resp"][y_feature]  
+            # if "weights" not in pair["resp"]:
+            #     yw = np.ones_like(y)
+            # else:
+            #     yw = pair["resp"]["weights"][0:len(y)]
+
+            # x = x[:, 0:len(y)]
+            # x = x[:, yw> 0]
+            # y = y[yw > 0]
+            # yw = yw[yw >0]
+
+            x = all_x[iS]
+            y = all_y[iS]
+            yw = all_yw[iS]
     
             # Get the prediciton
             ypred = hJN[iS, :]@ (x - xavg[iS]) + yavg[iS]
@@ -1168,7 +1257,7 @@ store_error = False):
     if (kernel == 'Kernel'):
         diagCxx = np.diag(np.diag(np.squeeze(CxxAll)))
         uAll,sAll,vAll = np.linalg.svd(CxxAll-diagCxx)
-        CxxAll_inv = nearDiagInv(diagCxx, uAll, sAll, vAll, tol=ranktol[itMax])
+        CxxAll_inv = nearDiagInv_optim(diagCxx, uAll, sAll, vAll, tol=ranktol[itMax])
         hJNAll = CxxAll_inv @ CxyAll
     elif (kernel == 'Kernel2'):
         diagCxx = np.diag(np.diag(np.squeeze(CxxAll)))
@@ -1686,9 +1775,79 @@ def fit_seg_segId_model(
 
 
 # high level function
+def process_unit_strf(nwb_file, unit_name, model_dir=None, trials_type='playback_trials'):
+    respChunkLen = 100 # ms of stim to use in each chunk of feature space
+    segmentBuffer = 30 # ms to add at the beginning of each segment
+    strfLength = 200 # number of points in the STRF in sampling rate - 200 ms for Theunissen data
+    smooth_rt = 31 # smoothing window for the R2 calculation for the strf.  The segmented model is also fitted on a smooth_psth with the same time window.
+    all_models = dict()
+
+    # Calculate spectrogram, smooth psth and make a new object the stimulus-response Data: srData
+    srData = preprocSound.preprocess_sound_nwb(nwb_file, trials_type, unit_name, preprocess_type='ft')
+    preprocess_srData(srData, plot=False, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = False)
+
+    # Estimate the single trial SNR for this data set
+    snr = preprocSound.estimate_SNR(srData)
+    evOne= snr/(snr + 1)     # The expected variance (R2-ceiling) for one trial
+
+    # The Classic STRF
+
+    # Initialize the linear time invariant model. Here we choose 200 delay points 
+    nStimChannels = srData['nStimChannels']
+    strfDelays = np.arange(strfLength)
+    modelParams = strfSetup.linInit(nStimChannels, strfDelays)
+
+    # Convert srData into a format that strflab understands
+    allstim, allresp, allweights, groupIndex = strfSetup.srdata2strflab(srData, useRaw = False)
+    globDat = strfSetup.strfData(allstim, allresp, allweights, groupIndex)
+    
+    # Additional model options
+    modelParams['Tol_val'] = [0.100, 0.050, 0.010, 0.005, 1e-03, 1e-04, 5e-05, 0]  # These are the same as the default in fit_seg
+    modelParams['sparsenesses'] = [0, 1, 2, 3, 4, 5, 6, 7]   # The sparseness is a lasso like regularization
+    modelParams['timevary_PSTH'] = 0           # This is to calculate a time-varying mean across all stim
+    modelParams['smooth_rt'] = smooth_rt
+    modelParams['ampsamprate'] = srData['stimSampleRate']
+    modelParams['respsamprate'] = srData['respSampleRate']
+    modelParams['infoFreqCutoff'] = 100        # For the coherence-based Info calculation this is the frequency CutOff in Hz
+    modelParams['infoWindowSize'] = 0.250      # Window size in s for the coherence estimate
+    modelParams['TimeLagUnit'] = 'frame'       # Can be set to 'frame' or 'msec'
+    modelParams['outputPath'] = os.path.join(tempfile.gettempdir(), srData['UUID'])  # Temporary path to store the results
+    modelParams['TimeLag'] =  int(np.ceil(np.max(np.abs(modelParams['delays']))))
 
 
-def process_unit(nwb_file, unit_name):
+    # Run direct fit optimization on all of the data
+    modelParams = trnDirectFit.trnDirectFit(modelParams, globDat)
+    r2STRF = modelParams['R2CV'].max()
+    if isinstance(nwb_file, nwb.NWBFile):
+        identifier = nwb_file.identifier
+    else:
+        identifier = nwb_file
+    all_models['strfModel'] = modelParams
+
+    # we will save the models to the model directory
+    if model_dir is not None:
+        if not os.path.exists(model_dir):
+            os.makedirs(model_dir)
+        print("Saving Models to %s" % model_dir)
+        unit_model_dir = os.path.join(model_dir, f"{identifier}_{unit_name}")
+        if not os.path.exists(unit_model_dir):
+            os.makedirs(unit_model_dir)
+        # Save the models as pickle files
+        for model in all_models.keys():
+            model_path = os.path.join(unit_model_dir, f"{int(unit_name)}_{model}.pkl")
+            with open(model_path, 'wb') as f:
+                pickle.dump(all_models[model], f)
+        print("Models saved successfully.")
+    result = {
+        'nwb_file_identifier': identifier,
+        'unit' : unit_name,
+        'r2Ceil' : evOne,
+        'r2STRF' : r2STRF
+    }
+    
+    return result
+
+def process_unit(nwb_file, unit_name, model_dir=None, trials_type='playback_trials'):
     ''' Fits using ridge or modified ridge 4 encoding models using the data structure in srData.  The four encoding models are:
             a segmentation model,
             a segmenation + identification using LG expansion
@@ -1709,9 +1868,10 @@ def process_unit(nwb_file, unit_name):
     nPCs = 20
     nDOGS = 5
     smooth_rt = 31 # smoothing window for the R2 calculation for the strf.  The segmented model is also fitted on a smooth_psth with the same time window.
+    all_models = dict()
 
     # Calculate spectrogram, smooth psth and make a new object the stimulus-response Data: srData
-    srData = preprocSound.preprocess_sound_nwb(nwb_file, 'playback_trials', unit_name, preprocess_type='ft')
+    srData = preprocSound.preprocess_sound_nwb(nwb_file, trials_type, unit_name, preprocess_type='ft')
     preprocess_srData(srData, plot=False, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = False)
 
     # Estimate the single trial SNR for this data set
@@ -1719,9 +1879,10 @@ def process_unit(nwb_file, unit_name):
     evOne= snr/(snr + 1)     # The expected variance (R2-ceiling) for one trial
 
     # Fit the segmentation (on-off here) kernel (impulse response)
-    segModel = fit_seg(srData, nPoints, x_feature = event_types, y_feature = 'psth_smooth', kernel = 'Kernel', nD=2, tol=np.array([0.1, 0.01, 0.001, 0.0001]), store_error = True  )
+    segModel = fit_seg(srData, nPoints, x_feature = event_types, y_feature = 'psth_smooth', kernel = 'Kernel', nD=2, tol=np.array([0.1, 0.01, 0.001, 0.0001, 0.00001, 0]), store_error = True  )
     learned_conv_kernel = segModel['weights'].reshape(2, nPoints)
     r2segModel = np.max(segModel['R2CV'])
+    all_models['segModel'] = segModel
 
     # Fit the on-off kernels with laguerre and DOGs
     laguerre_args = fit_kernel_LG(learned_conv_kernel, nPoints, nD=2)
@@ -1730,18 +1891,24 @@ def process_unit(nwb_file, unit_name):
     # first use PCA to reduce dim of the features'
     pca_spect = generate_event_pca_feature(srData, event_types, feature, pca = None, npcs=nPCs)
     pca_mps = generate_event_pca_feature(srData, event_types, feature2, pca = None, npcs=nPCs)
+    all_models['pca_spect'] = pca_spect
+    all_models['pca_mps'] = pca_mps
 
     # Calculate the segmented encoding models for spectrograms, LGs and DOGS.
-    segIDModelLG = fit_seg(srData, nPoints, feature, y_feature = 'error_Kernel', y_R2feature = 'psth_smooth', kernel = 'LG', basis_args =laguerre_args, nD=nLaguerre) 
+    segIDModelLG = fit_seg(srData, nPoints, feature, y_feature = 'psth_smooth', kernel = 'LG', basis_args =laguerre_args, nD=nLaguerre) # 'error_Kernel', y_R2feature =
     r2segIDModelLG = np.max(segIDModelLG['R2CV'])
-    segIDModelDG = fit_seg(srData, nPoints, feature, y_feature = 'error_Kernel', y_R2feature = 'psth_smooth', kernel = 'DG', basis_args =DOGS_args, nD=nDOGS)
+    segIDModelDG = fit_seg(srData, nPoints, feature, y_feature = 'psth_smooth', kernel = 'DG', basis_args =DOGS_args, nD=nDOGS)
     r2segIDModelDG = np.max(segIDModelDG['R2CV'])
+    all_models['segIDModelLG'] = segIDModelLG
+    all_models['segIDModelDG'] = segIDModelDG
 
     # Repeat using the MPS
-    segIDModelLGMPS = fit_seg(srData, nPoints, feature2, y_feature = 'error_Kernel', y_R2feature = 'psth_smooth', kernel = 'LG', basis_args =laguerre_args, nD=nLaguerre) 
+    segIDModelLGMPS = fit_seg(srData, nPoints, feature2, y_feature = 'psth_smooth', kernel = 'LG', basis_args =laguerre_args, nD=nLaguerre) 
     r2segIDModelLGMPS = np.max(segIDModelLGMPS['R2CV'])
-    segIDModelDGMPS = fit_seg(srData, nPoints, feature2, y_feature = 'error_Kernel', y_R2feature = 'psth_smooth', kernel = 'DG', basis_args =DOGS_args, nD=nDOGS)
+    segIDModelDGMPS = fit_seg(srData, nPoints, feature2, y_feature = 'psth_smooth', kernel = 'DG', basis_args =DOGS_args, nD=nDOGS)
     r2segIDModelDGMPS = np.max(segIDModelDGMPS['R2CV'])
+    all_models['segIDModelLGMPS'] = segIDModelLGMPS
+    all_models['segIDModelDGMPS'] = segIDModelDGMPS
 
     # The Classic STRF
 
@@ -1753,7 +1920,7 @@ def process_unit(nwb_file, unit_name):
     # Convert srData into a format that strflab understands
     allstim, allresp, allweights, groupIndex = strfSetup.srdata2strflab(srData, useRaw = False)
     globDat = strfSetup.strfData(allstim, allresp, allweights, groupIndex)
-
+    
     # Additional model options
     modelParams['Tol_val'] = [0.100, 0.050, 0.010, 0.005, 1e-03, 1e-04, 5e-05, 0]  # These are the same as the default in fit_seg
     modelParams['sparsenesses'] = [0, 1, 2, 3, 4, 5, 6, 7]   # The sparseness is a lasso like regularization
@@ -1764,34 +1931,139 @@ def process_unit(nwb_file, unit_name):
     modelParams['infoFreqCutoff'] = 100        # For the coherence-based Info calculation this is the frequency CutOff in Hz
     modelParams['infoWindowSize'] = 0.250      # Window size in s for the coherence estimate
     modelParams['TimeLagUnit'] = 'frame'       # Can be set to 'frame' or 'msec'
-    modelParams['outputPath'] = tempfile.gettempdir()
+    modelParams['outputPath'] = os.path.join(tempfile.gettempdir(), srData['UUID'])  # Temporary path to store the results
     modelParams['TimeLag'] =  int(np.ceil(np.max(np.abs(modelParams['delays']))))
- 
+
 
     # Run direct fit optimization on all of the data
     modelParams = trnDirectFit.trnDirectFit(modelParams, globDat)
     r2STRF = modelParams['R2CV'].max()
+    if isinstance(nwb_file, nwb.NWBFile):
+        identifier = nwb_file.identifier
+    else:
+        identifier = nwb_file
+    all_models['strfModel'] = modelParams
 
+    # we will save the models to the model directory
+    if model_dir is not None:
+        if not os.path.exists(model_dir):
+            os.makedirs(model_dir)
+        print("Saving Models to %s" % model_dir)
+        unit_model_dir = os.path.join(model_dir, f"{identifier}_{unit_name}")
+        if not os.path.exists(unit_model_dir):
+            os.makedirs(unit_model_dir)
+        # Save the models as pickle files
+        for model in all_models.keys():
+            model_path = os.path.join(unit_model_dir, f"{int(unit_name)}_{model}.pkl")
+            with open(model_path, 'wb') as f:
+                pickle.dump(all_models[model], f)
+        print("Models saved successfully.")
     result = {
-        'nwb_file': nwb_file,
+        'nwb_file_identifier': identifier,
         'unit' : unit_name,
         'r2Ceil' : evOne,
-        'segModel' : segModel,
         'r2segModel' : r2segModel,
         'Laguerre_args' :  laguerre_args,
         'dogs_args' : DOGS_args,
-        'pca_spect' : pca_spect,
-        'pca_mps' : pca_mps,
-        'segIDModelLG': segIDModelLG,
         'r2segIDModelLG' : r2segIDModelLG,
-        'segIDModelDG': segIDModelDG,
         'r2segIDModelDG' : r2segIDModelDG,
-        'segIDModelLGMPS': segIDModelLGMPS,
         'r2segIDModelLGMPS' : r2segIDModelLGMPS,
-        'segIDModelDG': segIDModelDGMPS,
         'r2segIDModelDG' : r2segIDModelDGMPS,
-        'strfModel' : modelParams,
         'r2STRF' : r2STRF
+    }
+    
+    return result
+
+def process_unit_nostrf(nwb_file, unit_name, model_dir=None, trials_type='playback_trials'):
+    ''' Fits using ridge or modified ridge 4 encoding models using the data structure in srData.  The four encoding models are:
+            a segmentation model,
+            a segmenation + identification using LG expansion
+            a segmentation + identification using DOGS expansion
+    This is a version that does not fit the STRF, so it is faster.            
+    '''
+
+    # Segmentation and fit parameters - this could be a dictionary of options
+    respChunkLen = 100 # ms of stim to use in each chunk of feature space
+    segmentBuffer = 30 # ms to add at the beginning of each segment
+    nLaguerre = 25 # number of laguerre functions to use
+    feature = 'spect_windows'
+    feature2 = 'mps_windows'
+    event_types = 'onoff_feature'
+    nPoints = 150 # number of points to use in the kernel
+    nPCs = 20
+    nDOGS = 5
+    all_models = dict()
+
+    # Calculate spectrogram, smooth psth and make a new object the stimulus-response Data: srData
+    srData = preprocSound.preprocess_sound_nwb(nwb_file, trials_type, unit_name, preprocess_type='ft')
+    preprocess_srData(srData, plot=False, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = False)
+
+    # Estimate the single trial SNR for this data set
+    snr = preprocSound.estimate_SNR(srData)
+    evOne= snr/(snr + 1)     # The expected variance (R2-ceiling) for one trial
+
+    # Fit the segmentation (on-off here) kernel (impulse response)
+    segModel = fit_seg(srData, nPoints, x_feature = event_types, y_feature = 'psth_smooth', kernel = 'Kernel', nD=2, tol=np.array([0.1, 0.01, 0.001, 0.0001, 0.00001, 0]), store_error = True  )
+    learned_conv_kernel = segModel['weights'].reshape(2, nPoints)
+    r2segModel = np.max(segModel['R2CV'])
+    all_models['segModel'] = segModel
+
+    # Fit the on-off kernels with laguerre and DOGs
+    laguerre_args = fit_kernel_LG(learned_conv_kernel, nPoints, nD=2)
+    DOGS_args = fit_kernel_DG(learned_conv_kernel, nPoints, nD=2)
+
+    # first use PCA to reduce dim of the features'
+    pca_spect = generate_event_pca_feature(srData, event_types, feature, pca = None, npcs=nPCs)
+    pca_mps = generate_event_pca_feature(srData, event_types, feature2, pca = None, npcs=nPCs)
+    all_models['pca_spect'] = pca_spect
+    all_models['pca_mps'] = pca_mps
+
+    # Calculate the segmented encoding models for spectrograms, LGs and DOGS.
+    segIDModelLG = fit_seg(srData, nPoints, feature, y_feature = 'psth_smooth', kernel = 'LG', basis_args =laguerre_args, nD=nLaguerre) # 'error_Kernel', y_R2feature =
+    r2segIDModelLG = np.max(segIDModelLG['R2CV'])
+    segIDModelDG = fit_seg(srData, nPoints, feature, y_feature = 'psth_smooth', kernel = 'DG', basis_args =DOGS_args, nD=nDOGS)
+    r2segIDModelDG = np.max(segIDModelDG['R2CV'])
+    all_models['segIDModelLG'] = segIDModelLG
+    all_models['segIDModelDG'] = segIDModelDG
+
+    # Repeat using the MPS
+    segIDModelLGMPS = fit_seg(srData, nPoints, feature2, y_feature = 'psth_smooth', kernel = 'LG', basis_args =laguerre_args, nD=nLaguerre) 
+    r2segIDModelLGMPS = np.max(segIDModelLGMPS['R2CV'])
+    segIDModelDGMPS = fit_seg(srData, nPoints, feature2, y_feature = 'psth_smooth', kernel = 'DG', basis_args =DOGS_args, nD=nDOGS)
+    r2segIDModelDGMPS = np.max(segIDModelDGMPS['R2CV'])
+    all_models['segIDModelLGMPS'] = segIDModelLGMPS
+    all_models['segIDModelDGMPS'] = segIDModelDGMPS
+    
+    if isinstance(nwb_file, nwb.NWBFile):
+        identifier = nwb_file.identifier
+    else:
+        identifier = nwb_file
+
+    # we will save the models to the model directory
+    if model_dir is not None:
+        if not os.path.exists(model_dir):
+            os.makedirs(model_dir)
+        print("Saving Models to %s" % model_dir)
+        unit_model_dir = os.path.join(model_dir, f"{identifier}_{unit_name}")
+        if not os.path.exists(unit_model_dir):
+            os.makedirs(unit_model_dir)
+        # Save the models as pickle files
+        for model in all_models.keys():
+            model_path = os.path.join(unit_model_dir, f"{int(unit_name)}_{model}.pkl")
+            with open(model_path, 'wb') as f:
+                pickle.dump(all_models[model], f)
+        print("Models saved successfully.")
+    result = {
+        'nwb_file_identifier': identifier,
+        'unit' : unit_name,
+        'r2Ceil' : evOne,
+        'r2segModel' : r2segModel,
+        'Laguerre_args' :  laguerre_args,
+        'dogs_args' : DOGS_args,
+        'r2segIDModelLG' : r2segIDModelLG,
+        'r2segIDModelDG' : r2segIDModelDG,
+        'r2segIDModelLGMPS' : r2segIDModelLGMPS,
+        'r2segIDModelDG' : r2segIDModelDGMPS,
     }
     
     return result
