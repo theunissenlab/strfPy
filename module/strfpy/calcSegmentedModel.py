@@ -1715,14 +1715,14 @@ def process_unit(nwb_file, unit_name):
     preprocess_srData(srData, plot=False, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = False)
 
     # Estimate the single trial SNR for this data set
-    snr = preprocSound.estimate_SNR(srData)
-    evOne= snr/(snr + 1)     # The expected variance (R2-ceiling) for one trial - not used here
+    snrEst, f, snrEstf, cumInfo, totWeight  = preprocSound.estimate_SNR(srData)
+    evOne= snrEst/(snrEst + 1)     # The expected variance (R2-ceiling) for one trial - not used here
     r2num = 0
     r2den = 0
     for pair in srData["datasets"]:
         yw = pair["resp"]["weights"]
-        r2num += np.sum(snr*yw)
-        r2den += np.sum(1+snr*yw)
+        r2num += np.sum(snrEst*yw)
+        r2den += np.sum(1+snrEst*yw)
 
     EV = r2num/r2den
 
@@ -1784,7 +1784,11 @@ def process_unit(nwb_file, unit_name):
         'nwb_file': nwb_file,
         'unit' : unit_name,
         'r2Ceil' : EV,
-        'snr' : snr,
+        'snr' : snrEst,
+        'f' : f,
+        'snrEstf' : snrEstf,
+        'cumInfo' : cumInfo,
+        'totWeight' : totWeight,
         'segModel' : segModel,
         'r2segModel' : r2segModel,
         'Laguerre_args' :  laguerre_args,

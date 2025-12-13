@@ -3,6 +3,7 @@ import sys
 import numpy as np
 from scipy.io import loadmat
 from scipy.signal import convolve, windows
+from scipy.signal import coherence, welch
 import pandas as pd
 import pynwb as nwb
 
@@ -1074,16 +1075,26 @@ def preprocess_sound_nwb_singletrial(nwb_file, intervals_name, unit_id, preproce
 
         return srData
 
-def estimate_SNR(srData, smWindow=31):
-    # Estimate the single trial SNR in a stimulus response data set.  smWindow is the smoothing window and should match the one used in the model in preprocess_srData() in calcSegmentedModel
+def estimate_SNR(srData, smWindow=31, smWindowCoh=7):
+    # Estimate the single trial SNR and the coherence in a stimulus response data set.  
+    # smWindow is the smoothing window and should match the one used in the model in preprocess_srData() in calcSegmentedModel
+    # smWindowCoh is the smoothing window used to calculate the coherence
     
+    fftlen = 256
     pairCount = len(srData['datasets'])
-    wHann = windows.hann(smWindow, sym=True)   # The 21 ms (number of points) hanning window used to smooth the PSTH
+    fs = srData['respSampleRate']
+
+    # Smoothing windows
+    wHann = windows.hann(smWindow, sym=True)   # The 31 ms (number of points) hanning window used to smooth the PSTH
     wHann = wHann/sum(wHann)
 
+    wHannCoh = windows.hann(smWindowCoh, sym=True)
+    wHannCoh = wHannCoh/sum(wHannCoh)
 
     totS2 = 0
     totN2 = 0
+    totS2f = np.zeros(fftlen//2+1)
+    totN2f = np.zeros(fftlen//2+1)
     totWeight = 0
 
     for iSet in range(pairCount):
@@ -1115,34 +1126,88 @@ def estimate_SNR(srData, smWindow=31):
         psth1[psth_idx_1[psth_idx_1<nT]] = counts_1[psth_idx_1<nT]
         psth2[psth_idx_2[psth_idx_2<nT]] = counts_2[psth_idx_2<nT]
 
-        # Smooth the psth halves, cross-correlate and estimate the unscaled trial SNR
-        psth1 = np.convolve(psth1, wHann, mode='same')
-        psth2 = np.convolve(psth2, wHann, mode='same')
-
-        # Calculate response power
-        meanPsth = np.mean(psth1 + psth2)/2
-        respPower = np.sum((psth1-meanPsth)**2) + np.sum((psth2-meanPsth)**2)
-        respPower *= ntrials/2
-        
         # Skip trials where there is no variation
         if ( (np.var(psth1) == 0.0) | (np.var(psth2) == 0.0) ):
             continue
 
-        r = Pearson_r(psth1, psth2)
-        snr = (2*r/(1-r))/ntrials
-        
-        # totSNR += (2*r/(1-r))*nT
-        if (snr < 0):
-            totN2 += respPower
-        else:
-            N2 = respPower*(1/(1+snr))
-            totS2 += respPower - N2
-            totN2 += N2
+        # Smooth the psth halves, cross-correlate and estimate the unscaled trial SNR
+        psth1snr = np.convolve(psth1, wHann, mode='same')
+        psth2snr = np.convolve(psth2, wHann, mode='same')
 
+        # Calculate total response power and the  response power (summed for all points and trials).
+        meanPsth = np.mean(psth1snr + psth2snr)/2
+        respPower = np.sum((psth1snr-meanPsth)**2) + np.sum((psth2snr-meanPsth)**2)
+        respPowerST = respPower/(ntrials**2)
+
+
+        r = Pearson_r(psth1snr, psth2snr)
+        snr = (2*r/(1-r))/ntrials # Single trial SNR estimate
+        
+        # Calculate Coherence
+        # Add noise floor to "regularize" the calculation - it prevents 0/0   
+        psth1coh = np.convolve(psth1, wHannCoh, mode='same')
+        psth2coh = np.convolve(psth2, wHannCoh, mode='same')
+        scaleNoise = np.std((psth1coh+psth2coh)/2)/1000
+
+        psth1coh += np.random.normal(scale=scaleNoise, size=nT)
+        psth2coh += np.random.normal(scale=scaleNoise, size=nT)
+
+        psthcoh = psth1coh + psth2coh
+        psthcoh -= np.mean(psthcoh)
+
+        # Calculate the coherence and the power spectrum of response power den
+        f, Cxy = coherence(psth1coh, psth2coh, fs=fs, window='hann', nperseg=fftlen, noverlap=fftlen//2)
+        f, respPowerf = welch(psthcoh, fs=fs, window='hann', nperseg=fftlen, noverlap=fftlen//2)
+        respPowerfST = respPowerf/(ntrials**2)
+
+        # Use frequencies above fs/4 (Nyquist/2) to find positive values of coherence corresponding to random values
+        meanC = np.mean(Cxy[np.argwhere(f>=fs/4.0)])
+        stdC = np.std(Cxy[np.argwhere(f>=fs/4.0)])
+
+        # Subtract the positive bias and set to zero values below two STD.
+        Cxy -= meanC
+        Cxy[Cxy<2.0*stdC] = 0
+        SNRf = (2*np.sqrt(Cxy)/(1-np.sqrt(Cxy)))/ntrials
+
+
+        # Calculate overall signal power and noise powr. Note that they are already scaled by the trial length.
+        if (snr < 0):
+            N2 = respPowerST
+            S2 = 0      
+        else:
+            N2 = respPowerST*(1/(1+snr))
+            S2 = respPowerST - N2
+
+        totN2 += N2*ntrials
+        totS2 += S2*ntrials
+
+        # Calculate the overall coherence
+        N2f = respPowerfST*(1/(1+SNRf))
+        S2f = respPowerfST - N2f
+
+        # Because these are windowed PSD estimates, we need to scale by number of points and trials
+        totS2f += S2f*(nT*ntrials)
+        totN2f += N2f*(nT*ntrials)
+
+        # Our total weights is a measure of total data points used
         totWeight += nT*ntrials
 
+    snrEst = totS2/totN2
+    snrEstf = totS2f/totN2f
 
-    return totS2/totN2
+    # Recaculate the coherence to get rid of noise
+    cohTot = snrEstf/(1+snrEstf)
+    meanC = np.mean(cohTot[np.argwhere(f>=fs/4.0)])
+    stdC = np.std(cohTot[np.argwhere(f>=fs/4.0)])
+    cohTot -= meanC
+    cohTot[cohTot<2.0*stdC] = 0
+    snrEstf = cohTot/(1-cohTot)
+
+
+    Info = np.log2(1+snrEstf)*(f[1]-f[0])
+    cumInfo = np.cumsum(Info)
+
+    return snrEst, f, snrEstf, cumInfo, totWeight 
 
 def calculate_EV(srData, nPoints=200, mult_values=False):
     # iterate through each pair
