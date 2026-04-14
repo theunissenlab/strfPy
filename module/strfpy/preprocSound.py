@@ -312,13 +312,21 @@ def balance_trials(trials: pd.DataFrame,
     balanced_trials = balanced_trials.reset_index(level=list(range(len(grouping))), drop=True)
     
     return balanced_trials
+
+
 def get_mic_data(nwb, trial, ch=1):
+    """
+    get microphone data.
+    
+    mic_data[:,1] is actual mic trial data.  
+    mic_data[:,0] is a copy of stim.  
+    """
     rate = nwb.acquisition['audio'].rate
     mic_data = nwb.acquisition['audio'].data
     start_id = int(trial.start_time * rate)
     end_id = int(trial.stop_time * rate)
     mic_trial = mic_data[start_id:end_id]
-    return mic_trial[:,1]
+    return mic_trial[:,1], mic_trial[:, 0]
 
 def generate_srData_nwb_single_trials(nwb, intervals_name, unit_id, balanceFlg = True):
     # params
