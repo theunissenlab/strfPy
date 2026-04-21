@@ -15,7 +15,7 @@ def df_cal_AutoCorrJN(DS, stim_avg, twindow, nband, PARAMS):
     filecount = len(DS)
     
     # Temporal axis range
-    tot_corr = int(np.diff(twindow) + 1)
+    tot_corr = int(np.diff(twindow).item() + 1)
     
     # Spatial axis range
     spa_corr = int((nband * (nband - 1)) // 2 + nband)
@@ -114,7 +114,7 @@ def df_cal_AutoCorrSep(DS, stim_avg, twindow, nband, JN_flag=None):
     
     # initialize output
     filecount = len(DS)
-    tot_corr = np.diff(twindow) + 1
+    tot_corr = np.diff(twindow).item() + 1
     spa_corr = int((nband * (nband - 1))/2 + nband)
     CSspace = np.zeros((nband, nband))
     CStime = np.zeros((1, tot_corr*2-1))

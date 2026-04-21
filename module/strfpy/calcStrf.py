@@ -95,11 +95,11 @@ def df_cal_Strf(params, fstim, fstim_JN, fstim_spike, stim_spike_JNf, stim_spike
 
   
         for ii in range(nb):
-            ffor[ii,iff] = h[ii]
+            ffor[ii,iff] = h[ii].item()
             fforJN[ii,iff,:] = hJN[:,ii]
 
             if iff != 0:
-                ffor[ii,nt-iff] = np.conj(h[ii])
+                ffor[ii,nt-iff] = np.conj(h[ii].item())
                 fforJN[ii,nt-iff,:] = np.conj(hJN[:,ii])
 
 

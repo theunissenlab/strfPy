@@ -137,7 +137,7 @@ def df_cal_CrossCorr(DS, PARAMS, stim_avg=None, avg_psth=None, psth=None,
     filecount = len(DS)
     
     # temporal axis range
-    tot_corr = int(np.diff(twindow) + 1)
+    tot_corr = int(np.diff(twindow).item() + 1)
     # spatial axis range
     spa_corr = int(nband)
     
