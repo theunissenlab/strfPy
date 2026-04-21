@@ -161,7 +161,7 @@ def trnDirectFit(modelParams, globalDat):
 
         ## get best strf
     
-    print('Best STRF found at tol=%f, sparseness=%d, info=%.2f bits R2=%.4f\n' % (bestTol, bestSparseness, bestInfoVal, bestR2CV))
+    print('Best STRF found at tol=%f, sparseness=%d, info=%.2f bits R2=%.4f\n' % (bestTol, bestSparseness, bestInfoVal.item(), bestR2CV))
     
     modelParams['w1'] = bestStrf
     modelParams['R2CV'] = R2CV
