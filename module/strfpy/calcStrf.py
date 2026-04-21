@@ -20,11 +20,11 @@ def df_cal_Strf(params, fstim, fstim_JN, fstim_spike, stim_spike_JNf, stim_spike
     hJN = np.zeros((nJN, nb), dtype=np.complex128)
     ffor = np.zeros(stim_spike_size, dtype=np.complex128)
     fforJN = np.zeros(stim_spike_JNsize, dtype=np.complex128)
-    strfH = np.zeros(stim_spike_size, dtype = np.float_)
-    strfHJN = np.zeros(stim_spike_JNsize, dtype=np.float_)
-    cums = np.zeros((nf, nb+1), dtype=np.float_)
-    ranktest = np.zeros((1, nf), dtype=np.float_)
-    stimnorm = np.zeros((1, nf), dtype=np.float_)  
+    strfH = np.zeros(stim_spike_size, dtype = np.float64)
+    strfHJN = np.zeros(stim_spike_JNsize, dtype=np.float64)
+    cums = np.zeros((nf, nb+1), dtype=np.float64)
+    ranktest = np.zeros((1, nf), dtype=np.float64)
+    stimnorm = np.zeros((1, nf), dtype=np.float64)  
 
     # Generate the index to fill in the stimulus auto-correlation matrix
     # np_trill_indices does not work because it organizes indices differently
