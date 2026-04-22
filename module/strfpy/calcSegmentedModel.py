@@ -874,7 +874,7 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
     )
     mean_mps = np.mean(all_mps, axis=0)
     for iSet in range(pairCount):
-        srData["datasets"][iSet]["events"]["mps_windows"] = (
+        srData["datasets"][iSet]["events"]["zero_mean_mps_windows"] = (
             srData["datasets"][iSet]["events"]["mps_windows"] - mean_mps
         )
 
