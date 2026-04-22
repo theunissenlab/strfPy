@@ -343,7 +343,11 @@ def generate_srData_nwb_single_trials(nwb, intervals_name, unit_id, balanceFlg =
     unit_valid_intervals = all_valid_intervals[all_valid_intervals['unit_id'] == unit_id]
 
     # remove trials that are not in valid intervals
-    valid_trials = all_trials.apply(lambda x: any((unit_valid_intervals.start_time < x.start_time) & (unit_valid_intervals.stop_time > x.stop_time)), axis=1)
+    valid_trials = all_trials.apply(
+        lambda x: any(
+            (unit_valid_intervals.start_time < x.start_time) & 
+            (unit_valid_intervals.stop_time > x.stop_time)
+            ), axis=1)
     all_trials = all_trials[valid_trials]
 
     # lets balance the trials by stimuli name
