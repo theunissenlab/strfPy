@@ -1308,7 +1308,9 @@ def fit_seg_st(
         stim_trials[name].append(i)
     
     unique_stims = list(stim_trials.keys())
-    nStims = len(unique_stims)
+    nStims = len(unique_stims)          # number of unique stimuli
+    nSets = len(srData['datasets'])     # number of total trials
+    print(f"total {nStims} unique stimuli, {nSets} total trials.")
     
     segModel=None
 
