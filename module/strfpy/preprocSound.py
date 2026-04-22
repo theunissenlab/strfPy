@@ -6,6 +6,7 @@ from scipy.signal import convolve, windows
 from scipy.signal import coherence, welch
 import pandas as pd
 import pynwb as nwb
+from tqdm import tqdm
 
 from .timeFreq import timefreq, timefreq_raw
 def find_long_zero_segments(arr, min_length=10):
@@ -366,7 +367,8 @@ def generate_srData_nwb_single_trials(nwb, intervals_name, unit_id, balanceFlg =
     max_stim_amp = 0.0
     max_resp_len = -1     # Stimulus-response length is number of points
     n_stim_channels = -1
-    for ix, row in all_trials.iterrows():
+
+    for ix, row in tqdm(all_trials.iterrows(), total=len(all_trials)):
         stim_name = row['stimuli_name']
         ds = {}
         wav_file_name = stim_name #raw_stim_files[k]
