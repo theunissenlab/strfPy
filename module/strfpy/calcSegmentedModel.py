@@ -12,6 +12,7 @@ from sklearn.decomposition import PCA
 from sklearn.linear_model import RidgeCV
 import pynwb as nwb
 import pickle
+from tqdm import tqdm
 
 # Depednecies from Theunissen Lab
 # from soundsig.sound import BioSound
@@ -657,7 +658,7 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
 
     pairCount = len(srData["datasets"])  # number of stim/response pairs
 
-    for iSet in range(pairCount):
+    for iSet in tqdm(range(pairCount), total=pairCount):
         events = dict(
             {
                 "index": [],
