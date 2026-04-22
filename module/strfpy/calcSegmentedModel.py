@@ -1318,6 +1318,14 @@ def fit_seg_st(
     # for cross-validation we keep the leave one out approach
     # one=stimulus
 
+    # === feature dimensionality ===
+    # Find the dimensionality of the x feature space.  For kernel it is just the number of points
+    # same as fit_seg.
+    if kernel in ['Kernel', 'Kernel2', 'Kernel0']:
+        nFeatures = nPoints
+    else:
+        raise NotImplemented("not yet implemented for LG/DOGs")
+
     # === generate x, y, yw ===
     
     
