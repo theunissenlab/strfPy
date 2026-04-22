@@ -1315,8 +1315,9 @@ def fit_seg_st(
     segModel=None
 
     # === set up cross-validation params ===
-    
-    
+    # for cross-validation we keep the leave one out approach
+    # one=stimulus
+
     # === generate x, y, yw ===
     
     
