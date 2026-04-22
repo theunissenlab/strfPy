@@ -1283,6 +1283,52 @@ store_error = False):
     # 6. Return segmented model
     return segModel
 
+
+def fit_seg_st(
+    srData,
+    nPoints,
+    x_feature,
+    y_feature='psth_smooth',
+    y_R2feature=None, 
+    kernel='Kernel',
+    basis_args=[],
+    nD=2,
+    tol=np.array([0.2, 0.1, 0.05, 0.01, 0.005, 0.001, 0.0005, 0.0001, 0.00001, 0]),
+    store_error=False
+):
+
+    # === group trials by stimulus name ===
+    stim_names = [ds['stim']['rawFile'] for ds in srData['datasets']]
+    stim_trials = {}
+    for i, name in enumerate(stim_names):
+        if name not in stim_trials:
+            stim_trials[name] = []
+        # store in the dict for each rawFile (stimulus) name, 
+        # the indices in srData to locate trials with this stim.
+        stim_trials[name].append(i)
+    
+    unique_stims = list(stim_trials.keys())
+    nStims = len(unique_stims)
+    
+    segModel=None
+
+    # === set up cross-validation params ===
+    
+    
+    # === generate x, y, yw ===
+    
+    
+    # === train and test stim-rep pairs ===
+    # = evaluate tol =
+    
+    
+    # === find best tolerance ===
+    
+    
+    # === fit final model on all data ===
+    
+    
+    return segModel
    
 
 def fit_seg_segId_model(
