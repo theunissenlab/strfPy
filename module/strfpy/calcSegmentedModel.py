@@ -1312,8 +1312,6 @@ def fit_seg_st(
     nSets = len(srData['datasets'])     # number of total trials
     print(f"total {nStims} unique stimuli, {nSets} total trials.")
     
-    segModel=None
-
     # === set up cross-validation params ===
     # for cross-validation we keep the leave one out approach
     # one=stimulus
@@ -1324,20 +1322,242 @@ def fit_seg_st(
     if kernel in ['Kernel', 'Kernel2', 'Kernel0']:
         nFeatures = nPoints
     else:
-        raise NotImplemented("not yet implemented for LG/DOGs")
+        raise NotImplementedError("not yet implemented for LG/DOGs")
 
     # === generate x, y, yw ===
+    # store these as dicts where key is index in srData
+    # different from fit_seg where this is tored as list.
+    all_x = {} 
+    all_y = {}
+    all_yw = {}
     
+    # sum at trial level (nSets)
+    xsum = np.zeros((nSets, nD * nFeatures, 1))
+    ysum = np.zeros(nSets)
+    count = np.zeros(nSets)
+    for iSet, pair in enumerate(srData['datasets']):
+        x = generate_x(
+            pair, x_feature,
+            basis_args=basis_args, xGen=kernel,
+            nPoints=nPoints, nLaguerre=nD
+        )
+        y = pair['resp'][y_feature]
+        if 'weights' not in pair['resp']:
+            yw = np.ones_like(y)
+        else:
+            yw = pair['resp']['weights'][0:len(y)]
+        
+        # eliminate entries with zero weight
+        x = x[:, 0:len(y)]
+        x = x[:, yw > 0]
+        y = y[yw > 0]
+        yw = yw[yw > 0]
+        all_x[iSet] = x
+        all_y[iSet] = y
+        all_yw[iSet] = yw
+        
+        # = compute weighted sums per trial =
+        xsum[iSet, :, :] = np.sum(x * yw.T, axis=1, keepdims=True)
+        ysum[iSet] = np.sum(y * yw)
+        count[iSet] = np.sum(yw)
+        
+    # = compute sums per stimulus =
+    # each stimulus gets the sum of its trials' sum in xsum/ysum
+    # equivalent to fit_seg's pair dataset xavg/yavg ...?
+    xsum_stim = np.zeros((nStims, nD * nFeatures, 1))
+    ysum_stim = np.zeros(nStims)
+    count_stim = np.zeros(nStims)
     
-    # === train and test stim-rep pairs ===
+     #loop through all unique stim
+    for iStim, stim_name in enumerate(unique_stims):
+        # loop through all trials for one stim
+        for iSet in stim_trials[stim_name]:
+            xsum_stim[iStim, :, :] += xsum[iSet, :, :]
+            ysum_stim[iStim] += ysum[iSet]
+            count_stim[iStim] += count[iSet]
+    
+    # === (2) calculate the leave-one-out average X and average Y
+    print("  compute LOO X and Y...")
+    xsumAll = np.sum(xsum_stim, axis=0)
+    ysumAll = np.sum(ysum_stim)
+    countAll = np.sum(count_stim)
+    
+    # global average
+    xavg = xsumAll / countAll
+    yavg = ysumAll / countAll
+    
+    # LOO average
+    xavg_loo = np.zeros((nStims, nD * nFeatures, 1))
+    yavg_loo = np.zeros(nStims)
+    for iStim in range(nStims):
+        xavg_loo[iStim, :, :] = np.divide(
+            xsumAll - xsum_stim[iStim, :, :],
+            countAll - count_stim[iStim]
+        )
+        yavg_loo[iStim] = np.divide(
+            
+            ysumAll - ysum_stim[iStim],
+            countAll - count_stim[iStim]
+        )
+    
+    # === (3) LOO Cxx and Cxy and Cxx norm
+    print("  compute Cxx and Cxy and Cxx norm...")
+    Cxx_stim = np.zeros((nStims, nD * nFeatures, nD*nFeatures))     # stimulus levfel
+    Cxy_stim = np.zeros((nStims, nD * nFeatures))
+
+    for iStim, stim_name in enumerate(unique_stims):
+        for iSet in stim_trials[stim_name]:
+            x,y,yw = all_x[iSet], all_y[iSet], all_yw[iSet]
+            x = np.squeeze(x)
+            xc = x - xavg
+            yc = y - yavg
+            Cxx_stim[iStim, :, :] += (xc * np.sqrt(yw).T) @ (xc * np.sqrt(yw).T).T
+            Cxy_stim[iStim, :] += xc @ (yc * yw)
+
+    CxxSum = np.sum(Cxx_stim, axis=0)
+    CxySum = np.sum(Cxy_stim, axis=0)
+    CxxNorm = np.zeros(nStims)
+    
+    # LOO:
+    Cxx_loo = np.zeros(Cxx_stim.shape)
+    Cxy_loo = np.zeros(Cxy_stim.shape)
+    for iStim in range(nStims):
+        Cxx_loo[iStim, :, :] = np.divide(
+            CxxSum - Cxx_stim[iStim, :, :],
+            countAll - count_stim[iStim]
+        )
+        Cxy_loo[iStim, :] = np.divide(
+            CxySum - Cxy_stim[iStim, :],
+            countAll - count_stim[iStim]
+        )
+        if kernel in ['Kernel', 'Kernel2']:
+            CxxNorm[iStim] = np.linalg.norm(
+                Cxx_loo[iStim, :, :] - np.diag(np.diag(Cxx_loo[iStim, :, :]))
+            )
+        else:
+            CxxNorm[iStim] = np.linalg.norm(Cxx_loo[iStim, :, : ])
+    
+    ranktol = tol * np.max(CxxNorm)
+    
+
+    
+    # === ridge regression ===
+    # = (4a) invert all auto-correlation mats =
+    print("  invert all auto-correlation mats...")
+    u = np.zeros((nStims, nD * nFeatures, nD * nFeatures))
+    v = np.zeros(u.shape)
+    s = np.zeros((nStims, nD * nFeatures))
+    if kernel == 'Kernel':
+        for iStim in range(nStims):
+            diagCxx = np.diag(np.diag(Cxx_loo[iStim, :, :]))
+            u[iStim, :, : ], s[iStim, :], v[iStim, :, :] = np.linalg.svd(
+                Cxx_loo[iStim, :, :] - diagCxx
+            )
+    else:
+        raise NotImplementedError(f"not yet implemented for {kernel}")
+    
     # = evaluate tol =
+    R2CV = np.zeros(len(tol))
     
-    
+    for it, tolval in enumerate(ranktol):
+        print(f"  evaluate tol={tolval}...")
+        simple_sum_yy = 0
+        simple_sum_y = 0
+        simple_sum_error = 0
+        simple_sum_count = 0
+        
+        for iStim, stim_name in tqdm(enumerate(unique_stims), total=nStims):
+            
+            # compute the solution using the Cxx with the curret stim left out
+            if kernel == 'Kernel':
+                diagCxx = np.diag(np.diag(Cxx_loo[iStim, :, : ]))
+                Cxx_inv = nearDiagInv_optim(
+                    diagCxx,
+                    u[iStim, :, :],
+                    s[iStim, :],
+                    v[iStim, :, :],
+                    tol=tolval
+                )
+                hJN = Cxx_inv @ Cxy_loo[iStim, : ]
+            elif kernel == 'Kernel2':
+                raise NotImplementedError("not yet implemneted for Kernel2")
+            else:
+                raise NotImplementedError(f"nor yet implemented for {kernel}")
+            
+            # use this solution to test on all trials of the held-out stimulus
+            for iSet in stim_trials[stim_name]:
+                # get the trial info
+                x,y,yw = all_x[iSet], all_y[iSet], all_yw[iSet]
+                
+                # get the prediction
+                ypred = hJN @ (x - xavg_loo[iStim]) + yavg_loo[iStim]
+
+                # store error if needed
+                if store_error:
+                    error = y - ypred
+                    # @TODO: store this in srData and return it 
+                    # srData is not being returned currently
+                    
+                if y_R2feature is None:
+                    yr2 = y
+                else:
+                    pair = srData['datasets'][iSet]
+                    yr2 = pair['resp'][y_R2feature][:len(y)]
+                    yr2 = yr2[yw > 0]
+                    ypred += (yr2 - y)
+                
+                # set negative predicted firing rate to zero
+                # flag?
+                ypred[ypred < 0] = 0
+                
+                simple_sum_count += np.sum(yw)
+                simple_sum_y += np.sum(yr2 * yw)
+                simple_sum_yy += np.sum(yr2 * yr2 * yw)
+                simple_sum_error += np.sum(((ypred - yr2)**2) * yw)
+        
+        y_mean = simple_sum_y / simple_sum_count
+        y_var = simple_sum_yy / simple_sum_count - y_mean**2
+        y_error = simple_sum_error / simple_sum_count
+        R2CV[it] = 1.0 - y_error / y_var
+
+                
     # === find best tolerance ===
-    
-    
+    itMax = np.argmax(R2CV)
+    if (itMax==0) or (itMax==len(tol)-1):
+        print('fit_seg() warning: Max prediction found for %f. Extend range of tolerance values' % tol[itMax])
+        print(f'fit_seg_st() warning: Max R2CV at boundary ranktol={ranktol[itMax]:.6f} (tol={tol[itMax]:.6f}). Extend range of tolerance values.')
+
     # === fit final model on all data ===
+    CxxAll = CxxSum / countAll
+    CxyAll = CxySum / countAll
     
+    if kernel == 'Kernel':
+        diagCxx = np.diag(np.diag(CxxAll))
+        uAll, sAll, vAll = np.linalg.svd(CxxAll - diagCxx)
+        CxxAll_inv = nearDiagInv_optim(
+            diagCxx,
+            uAll,
+            sAll,
+            vAll, 
+            tol=ranktol[itMax]
+        )
+        hJNAll = CxxAll_inv @ CxyAll
+    elif kernel == 'Kernel2':
+        raise NotImplemented()
+    else:
+        raise NotImplemented()
+    
+    b0 = -hJNAll @ (xsumAll/countAll) + (ysumAll/countAll)
+    
+    segModel = {
+        "weights": hJNAll,
+        "b0": b0,
+        "yavg": ysumAll/countAll,
+        "xavg": xsumAll/countAll,
+        "Cxy": CxyAll,
+        "Cxx": CxxAll,
+        "best_tol": tol[itMax],
+    }
     
     return segModel
    
