@@ -1322,7 +1322,11 @@ def fit_seg_st(
     if kernel in ['Kernel', 'Kernel2', 'Kernel0']:
         nFeatures = nPoints
     else:
-        raise NotImplementedError("not yet implemented for LG/DOGs")
+        pair = srData["datasets"][0]
+        x = pair["events"]["pca_%s" % x_feature]
+        if x.ndim == 1:
+            x = x[:, np.newaxis]
+        nFeatures = x.shape[1]
 
     # === generate x, y, yw ===
     # store these as dicts where key is index in srData
@@ -1454,7 +1458,10 @@ def fit_seg_st(
                 Cxx_loo[iStim, :, :] - diagCxx
             )
     else:
-        raise NotImplementedError(f"not yet implemented for {kernel}")
+        for iStim in range(nStims):
+            u[iStim, :, : ], s[iStim, :], v[iStim, :, :] = np.linalg.svd(
+                Cxx_loo[iStim, :, :]
+            )
     
     # = evaluate tol =
     R2CV = np.zeros(len(tol))
@@ -1480,10 +1487,19 @@ def fit_seg_st(
                 )
                 hJN = Cxx_inv @ Cxy_loo[iStim, : ]
             elif kernel == 'Kernel2':
-                raise NotImplementedError("not yet implemneted for Kernel2")
+                diagCxx = np.diag(np.diag(Cxx_loo[iStim, :, : ]))
+                Cxx_inv = nearDiagInv2(
+                    Cxx_loo[iStim,:,:],
+                    diagCxx,
+                    tol=tolval
+                )
+                hJN = Cxx_inv @ Cxy_loo[iStim, : ]
             else:
-                raise NotImplementedError(f"nor yet implemented for {kernel}")
-            
+                is_mat = np.zeros((nD * nFeatures, nD * nFeatures))
+                for ii in range(nD * nFeatures):
+                    is_mat[ii,ii] = 1.0 / (s[iStim, ii] + tolval)
+                hJN = v[iStim,:,:].T @ is_mat @ (u[iStim, :,:].T @ Cxy_loo[iStim, :])
+
             # use this solution to test on all trials of the held-out stimulus
             for iSet in stim_trials[stim_name]:
                 # get the trial info
@@ -1543,9 +1559,18 @@ def fit_seg_st(
         )
         hJNAll = CxxAll_inv @ CxyAll
     elif kernel == 'Kernel2':
-        raise NotImplemented()
+        diagCxx = np.diag(np.diag(CxxAll))
+        CxxAll_inv = nearDiagInv2(
+            CxxAll,
+            diagCxx,
+            tol=ranktol[itMax]
+        )
+        hJNAll = CxxAll_inv @ CxyAll
     else:
-        raise NotImplemented()
+        uAll, sAll, vAll = np.linalg.svd(CxxAll)
+        for ii in range(nD * nFeatures):
+            is_mat[ii,ii] = 1.0 / (sAll[ii] + ranktol[itMax])
+        hJNAll = vAll.T @ is_mat @ (uAll.T @ CxyAll)
     
     b0 = -hJNAll @ (xsumAll/countAll) + (ysumAll/countAll)
     
