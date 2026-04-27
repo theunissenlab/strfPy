@@ -616,7 +616,18 @@ def generate_pred_score(
 # preproc function
 
 
-def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, tdelta=0, plotFlg = False, seg_spec_lookup=None, smWindow=31):
+def preprocess_srData(
+    srData,
+    plot=False,
+    respChunkLen=150,
+    segmentBuffer=25,
+    tdelta=0,
+    plotFlg = False,
+    seg_spec_lookup=None,
+    smWindow=31,
+    smooth_ampdev=False,
+    std_devthresh=False,
+    ):
     """
     Preprocesses stimulus-response data by segmenting the stimulus based on its envelope, calculating the spectrogram,
     PSTH (Peri-Stimulus Time Histogram), and MPS (Modulation Power Spectrum).
@@ -692,6 +703,17 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
         ampenv = np.convolve(ampenv, wHann, mode="same")
         ampdev = ampenv[1:] - ampenv[0:-1]
 
+        #  ==> for trial mic data, try these:
+        if smooth_ampdev:
+            ampdev = np.convolve(ampdev, wHann, mode="same")
+        # print(np.std(ampdev))
+        if std_devthresh:
+            derivativeThresh = np.std(ampdev)
+        #  <==
+        # print(derivativeThresh)
+        events['ampenv'] = ampenv
+        events['ampdev'] = ampdev
+    
         # Find peaks and troughs
         peakInd, peakVals = find_peaks(
             ampdev, height=derivativeThresh, distance=minSound
@@ -1582,6 +1604,7 @@ def fit_seg_st(
         "Cxy": CxyAll,
         "Cxx": CxxAll,
         "best_tol": tol[itMax],
+        'R2CV': R2CV
     }
     
     return segModel
