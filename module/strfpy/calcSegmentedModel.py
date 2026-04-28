@@ -1524,6 +1524,7 @@ def fit_seg_st(
 
             # use this solution to test on all trials of the held-out stimulus
             for iSet in stim_trials[stim_name]:
+                pair = srData['datasets'][iSet]
                 # get the trial info
                 x,y,yw = all_x[iSet], all_y[iSet], all_yw[iSet]
                 
@@ -1532,14 +1533,11 @@ def fit_seg_st(
 
                 # store error if needed
                 if store_error:
-                    error = y - ypred
-                    # @TODO: store this in srData and return it 
-                    # srData is not being returned currently
+                    pair['resp']['error_%s' % kernel] = y - ypred
                     
                 if y_R2feature is None:
                     yr2 = y
                 else:
-                    pair = srData['datasets'][iSet]
                     yr2 = pair['resp'][y_R2feature][:len(y)]
                     yr2 = yr2[yw > 0]
                     ypred += (yr2 - y)
