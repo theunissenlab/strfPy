@@ -702,7 +702,7 @@ def preprocess_srData(
 
         ampenv = np.convolve(ampenv, wHann, mode="same")
         ampdev = ampenv[1:] - ampenv[0:-1]
-
+        events['raw_ampdev'] = ampdev
         #  ==> for trial mic data, try these:
         if smooth_ampdev:
             ampdev = np.convolve(ampdev, wHann, mode="same")
