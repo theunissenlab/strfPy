@@ -1435,8 +1435,8 @@ def fit_seg_st(
         for iSet in stim_trials[stim_name]:
             x,y,yw = all_x[iSet], all_y[iSet], all_yw[iSet]
             x = np.squeeze(x)
-            xc = x - xavg
-            yc = y - yavg
+            xc = x - xavg_loo[iStim]
+            yc = y - yavg_loo[iStim]
             Cxx_stim[iStim, :, :] += (xc * np.sqrt(yw).T) @ (xc * np.sqrt(yw).T).T
             Cxy_stim[iStim, :] += xc @ (yc * yw)
 
