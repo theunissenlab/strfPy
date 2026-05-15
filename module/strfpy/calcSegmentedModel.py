@@ -1043,8 +1043,21 @@ def generate_event_pca_feature(srData, event_types, feature, pca = None, npcs=20
 
 # fitting funcitons
 def fit_seg(
-    srData, nPoints, x_feature, y_feature = 'psth_smooth', y_R2feature = None, kernel = 'Kernel', basis_args = [], nD=2, pair_train_set=None, tol = np.array([0.2, 0.1, 0.05, 0.01, 0.005, 0.001, 0.0005, 0.0001, 0.00001, 0]),
-store_error = False):
+    srData,
+    nPoints,
+    x_feature,
+    y_feature='psth_smooth',
+    y_R2feature=None,
+    kernel='Kernel',
+    snrEst=None,
+    smWindow=31,
+    basis_args=[],
+    nD=2,
+    pair_train_set=None,
+    tol=
+    np.array([0.2, 0.1, 0.05, 0.01, 0.005, 0.001, 0.0005, 0.0001, 0.00001, 0]),
+    store_error = False
+):
     """
     Fits a segmented model to the given data using ridge regresseion and leave one out cross-validation
     Parameters:
@@ -1081,7 +1094,18 @@ store_error = False):
         if x.ndim == 1:
             x = x[:, np.newaxis]
         nFeatures = x.shape[1]
-  
+    
+    # if snrEst is none or not a number, we will estimate the SNR from the data.
+    # we need this to estimate the 'single trial' R2 from all trials for comparison with single trial
+    if snrEst is None or not isinstance(snrEst, (int, float)):
+        snrEst, f, snrEstf, cumInfo, totWeight = preprocSound.estimate_SNR(
+            srData, smWindow=smWindow
+            )
+    print(
+        'The single trial SNR with smoothing at %.0f ms is %.4f' % (
+            smWindow, snrEst)
+        )
+
     # 1. Calculate the averages to zero out data
     all_x = []
     all_y = []
