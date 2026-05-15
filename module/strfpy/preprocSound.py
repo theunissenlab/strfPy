@@ -321,6 +321,8 @@ def get_mic_data(nwb, trial, ch=1):
     
     mic_data[:,1] is actual mic trial data.  
     mic_data[:,0] is a copy of stim.  
+    
+    returns mic_trial, mic_copy
     """
     rate = nwb.acquisition['audio'].rate
     mic_data = nwb.acquisition['audio'].data
@@ -664,7 +666,22 @@ def calc_psth(spike_times,  psth_dur_s, t_start_s=0, bin_size=1, durations=None,
         psth = np.convolve(psth, wHann, mode='same')
     return np.arange(nbins)*bin_size/1000 + t_start_s, psth * 1000 / bin_size
 
-def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft', stim_params={}, stim_loader=None, pb_fix=None, ignore_intervals=False):
+def preprocess_sound_nwb(
+    nwb_file,
+    intervals_name,
+    unit_id,
+    preprocess_type='ft',
+    stim_params={},
+    stim_type="stimulus",
+    stim_loader=None,
+    pb_fix=None,
+    ignore_intervals=False
+):
+    """ 
+    stim_type (str): 'stimulus' or 'efferent'. 
+        if 'stimulus', we will load the stimulus from nwbfile.stimulus[stim_name]
+        if 'efferent', we will load the efferent signal in nwb.acquisition['audio'].
+    """
     # check if nwb_file is a path
     if isinstance(nwb_file, nwb.NWBFile):
         nwbfile = nwb_file
@@ -707,7 +724,13 @@ def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft'
         ds = {}
         # preprocess the stimuli by loading the wav and generating the tfrep
         wav_file_name = stim_name #raw_stim_files[k]
-        stim_data = nwbfile.stimulus[stim_name].data[:]
+        if stim_type == "stimulus":
+            stim_data = nwbfile.stimulus[stim_name].data[:]
+        elif stim_type == "efferent":
+            # get the first trial for this stimulus and load the efferent copy
+            stim_data = get_mic_data(nwbfile, stim_df.iloc[0])[1]
+        else:
+            raise ValueError(f"Invalid stim_type: {stim_type}. Must be 'stimulus' or 'efferent'.")
         zero_segs = find_long_zero_segments(stim_data, min_length=10)
         stim_fs = nwbfile.stimulus[stim_name].rate
         stim_params['fband'] = 120
