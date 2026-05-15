@@ -455,11 +455,12 @@ def generate_srData_nwb_single_trials(nwb, intervals_name, unit_id, balanceFlg =
         fixed_thres_spec = original_spec + fixed_shift
         fixed_thres_spec[fixed_thres_spec < 0] = 0.0
         
-        datasets[k]['stim']['tfrep']['spec'] = original_spec
+        datasets[k]['stim']['tfrep']['original_spec'] = original_spec
         datasets[k]['stim']['tfrep']['thres_spec'] = thres_spec
         datasets[k]['stim']['tfrep']['fixed_thres_spec'] = fixed_thres_spec 
 
-    
+        # @TODO: save as 'spec' from arg
+        datasets[k]['stim']['tfrep']['spec'] = thres_spec
     
     # set dataset-wide values
     srData = {
@@ -818,12 +819,27 @@ def preprocess_sound_nwb(
     
     # Threshold spectrogram - this should probably be elsewhere or at least consistent with log
     for k in range(len(datasets)):
-        spec = datasets[k]['stim']['tfrep']['spec']
-        spec = spec - max_stim_amp + DBNOISE
-        spec[spec<0] = 0.0
-        datasets[k]['stim']['tfrep']['thres_spec'] = spec
+        original_spec = datasets[k]['stim']['tfrep']['spec'].copy()
+        
+        # Threshold spec: shifted relative to max stimulus amplitude
+        thres_spec = original_spec - max_stim_amp + DBNOISE
+        thres_spec[thres_spec < 0] = 0.0
+        
+        # another spec that is shifted by a fixed amount that 
+        # respects the dynamic range of the spectrogram 
+        # but is thresholded to remove low values 
+        # fixed shift should not use maxstimap
+        fixed_shift = 10.0
+        fixed_thres_spec = original_spec + fixed_shift
+        fixed_thres_spec[fixed_thres_spec < 0] = 0.0
+        
+        datasets[k]['stim']['tfrep']['originalspec'] = original_spec
+        datasets[k]['stim']['tfrep']['thres_spec'] = thres_spec
+        datasets[k]['stim']['tfrep']['fixed_thres_spec'] = fixed_thres_spec
+        
+        # @TODO: save as 'spec' from arg
+        datasets[k]['stim']['tfrep']['spec'] = thres_spec
 
-    
     
     # set dataset-wide values
     srData = {
