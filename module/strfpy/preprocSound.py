@@ -697,16 +697,21 @@ def preprocess_sound_nwb(
     # get intervals and spike times from database
     all_trials = nwbfile.intervals[intervals_name].to_dataframe()
     unit_spike_times = nwbfile.units[unit_id].spike_times.values[0]
-    print(nwbfile.units[unit_id])
+    print(f"unit: {nwbfile.units[unit_id]}")
+
     # get unit valid intervals
     all_valid_intervals = nwbfile.intervals['unit_intervals'].to_dataframe()
     unit_valid_intervals = all_valid_intervals[all_valid_intervals['unit_id'] == unit_id]
 
     # remove trials that are not in valid intervals
-    valid_trials = all_trials.apply(lambda x: any((unit_valid_intervals.start_time < x.start_time) & (unit_valid_intervals.stop_time > x.stop_time)), axis=1)
+    valid_trials = all_trials.apply(
+        lambda x: any(
+            (unit_valid_intervals.start_time < x.start_time) & 
+            (unit_valid_intervals.stop_time > x.stop_time)
+            ), axis=1)
     all_trials = all_trials[valid_trials]
+
     if len(all_trials) == 0:
-        print(f"No valid trials found for unit {unit_id} in intervals {intervals_name}.")
         raise ValueError(f"No valid trials found for unit {unit_id} in intervals {intervals_name}.")
         return -1
     # lets balance the trials by stimuli name
