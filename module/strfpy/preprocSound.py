@@ -739,7 +739,9 @@ def preprocess_sound_nwb(
             stim_fs = nwbfile.acquisition['audio'].rate
         else:
             raise ValueError(f"Invalid stim_type: {stim_type}. Must be 'stimulus' or 'efferent'.")
+        
         zero_segs = find_long_zero_segments(stim_data, min_length=10)
+
         stim_params['fband'] = 120
         stim_params['nstd'] = 6
         stim_params['high_freq'] = 8000
@@ -747,6 +749,7 @@ def preprocess_sound_nwb(
         stim_params['log'] = 1
         stim_params['stim_rate'] = stim_sample_rate
         tfrep = timefreq_raw(stim_data,stim_fs, preprocess_type, stim_params)
+    
         stim = {
             'type': 'tfrep',
             'rawFile': stim_name,
@@ -761,9 +764,8 @@ def preprocess_sound_nwb(
 
         if (n_stim_channels == -1 ):
             n_stim_channels = stim['nStimChannels']
-        else:
-            if (n_stim_channels != stim['nStimChannels']):
-                print('Error: number of spatial (frequency) channels does not match across stimuli')
+        elif (n_stim_channels != stim['nStimChannels']):
+            print('Error: number of spatial (frequency) channels does not match across stimuli')
 
         if max_stim_amp == -999:
             max_stim_amp = stim['maxStimAmp']
@@ -780,7 +782,11 @@ def preprocess_sound_nwb(
 
         spike_idx_start = np.searchsorted(unit_spike_times, trial_starts)
         spike_idx_stop = np.searchsorted(unit_spike_times, trial_stops)
-        spike_times = [unit_spike_times[spike_idx_start[i]:spike_idx_stop[i]] - trial_starts[i] for i in range(len(trial_starts))]
+        spike_times = [
+            unit_spike_times[spike_idx_start[i]:spike_idx_stop[i]] - trial_starts[i] 
+            for i in range(len(trial_starts))
+        ]
+
         stim_len_samples = int(np.round(stim['stimLength']*1000))  # Stimulus length in ms
         bin_size = 1000.0/resp_sample_rate
         nbins = int(stim_len_samples // bin_size)
