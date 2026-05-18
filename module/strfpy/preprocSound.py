@@ -736,7 +736,7 @@ def preprocess_sound_nwb(
         elif stim_type == "efferent":
             # get the first trial for this stimulus and load the efferent copy
             stim_data = get_mic_data(nwbfile, stim_df.iloc[0])[1]
-            stim_fs = nwb.acquisition['audio'].rate
+            stim_fs = nwbfile.acquisition['audio'].rate
         else:
             raise ValueError(f"Invalid stim_type: {stim_type}. Must be 'stimulus' or 'efferent'.")
         zero_segs = find_long_zero_segments(stim_data, min_length=10)
