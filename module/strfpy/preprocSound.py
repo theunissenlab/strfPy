@@ -719,14 +719,45 @@ def preprocess_sound_nwb(
     # # if 'response' in all_trials.columns:
     # #     all_trials = all_trials[all_trials['response'] == False]
 
+    # create kwargs for trial-averaged or single-trial 
+    kwargs = dict(
+        nwbfile=nwbfile,
+        unit_spike_times=unit_spike_times,
+        preprocess_type=preprocess_type,
+        stim_params=stim_params,
+        stim_type=stim_type,
+        DBNOISE=DBNOISE,
+        stim_sample_rate=stim_sample_rate,
+        resp_sample_rate=resp_sample_rate,
+    )
+    groups = all_trials.groupby('stimuli_name')
+
     # now we have all the spike times aligned to the stimulus onset for all stimuli
     # now we group them by stimulus and preprocess them
+    srData = _generate_srdata(groups=groups, **kwargs)
+
+    return srData
+
+def _generate_srdata(
+    groups,
+    nwbfile,
+    unit_spike_times,
+    preprocess_type,
+    stim_params,
+    stim_type,
+    DBNOISE,
+    stim_sample_rate,
+    resp_sample_rate,
+):
+    
     srData = {}
+
     datasets = []
     max_stim_amp = -999
     max_resp_len = -1     # Stimulus-response length is number of points
     n_stim_channels = -1
-    for stim_name, stim_df in all_trials.groupby('stimuli_name'):
+    
+    for stim_name, stim_df in tqdm(groups):
         ds = {}
         # preprocess the stimuli by loading the wav and generating the tfrep
         wav_file_name = stim_name #raw_stim_files[k]
