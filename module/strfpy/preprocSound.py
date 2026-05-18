@@ -766,7 +766,12 @@ def _generate_srdata(
             stim_fs = nwbfile.stimulus[stim_name].rate
         elif stim_type == "efferent":
             # get the first trial for this stimulus and load the efferent copy
+            # print(len(stim_df))
             stim_data = get_mic_data(nwbfile, stim_df.iloc[0])[1]
+            stim_fs = nwbfile.acquisition['audio'].rate
+        elif stim_type == "mic":
+            assert len(stim_df) == 1, f"mic stim_type expects a single trial, got {len(stim_df)}"
+            stim_data = get_mic_data(nwbfile, stim_df)[0]
             stim_fs = nwbfile.acquisition['audio'].rate
         else:
             raise ValueError(f"Invalid stim_type: {stim_type}. Must be 'stimulus' or 'efferent'.")
