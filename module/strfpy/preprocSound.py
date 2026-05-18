@@ -674,6 +674,7 @@ def preprocess_sound_nwb(
     preprocess_type='ft',
     stim_params={},
     stim_type="stimulus",
+    mode="average",
     stim_loader=None,
     pb_fix=None,
     ignore_intervals=False
@@ -683,6 +684,19 @@ def preprocess_sound_nwb(
         if 'stimulus', we will load the stimulus from nwbfile.stimulus[stim_name]
         if 'efferent', we will load the efferent signal in nwb.acquisition['audio'].
     """
+    # check if mode is valid
+    if mode not in ['average', 'single_trial']:
+        raise ValueError(f"Invalid mode: {mode}. Must be 'average' or 'single_trial'.")
+
+    valid_stim_types = {
+    'average':      ('stimulus', 'efferent'),
+    'single_trial': ('mic',),
+    }
+
+    if stim_type not in valid_stim_types[mode]:
+        raise ValueError(f"stim_type={stim_type!r} is not valid for mode={mode!r}. "
+                        f"Must be one of {valid_stim_types[mode]}")
+
     # check if nwb_file is a path
     if isinstance(nwb_file, nwb.NWBFile):
         nwbfile = nwb_file
@@ -730,7 +744,11 @@ def preprocess_sound_nwb(
         stim_sample_rate=stim_sample_rate,
         resp_sample_rate=resp_sample_rate,
     )
-    groups = all_trials.groupby('stimuli_name')
+    
+    if mode == 'average':
+        groups = all_trials.groupby('stimuli_name')
+    elif mode == 'single_trial':
+        groups = list(all_trials.groupby(level=0))   # group by index, one row each
 
     # now we have all the spike times aligned to the stimulus onset for all stimuli
     # now we group them by stimulus and preprocess them
