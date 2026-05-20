@@ -1293,7 +1293,7 @@ def fit_seg(
             ntrials = len(pair['resp']['trialDurations'])
             yvar_nt = np.sum((yr2 - yavg[iS]) ** 2) / ntp    # response variance
             error_nt = np.sum((ypred - yr2) ** 2) / ntp
-            nvar_nt = yvar_nt / (snrEst + 1/ntp)     # noise variance from SNR
+            nvar_nt = yvar_nt / (snrEst + 1/ntrials)     # noise variance from SNR
             
             yvar_st = yvar_nt + nvar_nt * (1 - 1/ntrials)
             error_st = error_nt + nvar_nt * (1 - 1/ntrials)
