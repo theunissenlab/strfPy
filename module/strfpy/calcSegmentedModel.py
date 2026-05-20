@@ -1291,7 +1291,10 @@ def fit_seg(
             # not using yw here, only using time index (len of trial) ?
             ntp = len(yr2)      # number of time points in stim/resp
             ntrials = len(pair['resp']['trialDurations'])
-            yvar_nt = np.sum((yr2 - yavg[iS]) ** 2) / ntp    # response variance
+
+            yr2_mean = np.mean(yr2)     # time mean of this stimulus's averaged response
+
+            yvar_nt = np.sum((yr2 - yr2_mean) ** 2) / ntp    # response variance
             error_nt = np.sum((ypred - yr2) ** 2) / ntp
             nvar_nt = yvar_nt / (snrEst + 1/ntrials)     # noise variance from SNR
             
