@@ -443,24 +443,14 @@ def generate_srData_nwb_single_trials(nwb, intervals_name, unit_id, balanceFlg =
     for k in range(len(datasets)):
         original_spec = datasets[k]['stim']['tfrep']['spec'].copy()
         
-        # Threshold spec: shifted relative to max stimulus amplitude
+        # Threshold spec: shifted relative to max amplitude across all stimuli
+        # max_stim_amp is the same for all trials!
         thres_spec = original_spec - max_stim_amp + DBNOISE
         thres_spec[thres_spec < 0] = 0.0
-        
-        # another spec that is shifted by a fixed amount that 
-        # respects the dynamic range of the spectrogram 
-        # but is thresholded to remove low values 
-        # fixed shift should not use maxstimap
-        fixed_shift = 10.0
-        fixed_thres_spec = original_spec + fixed_shift
-        fixed_thres_spec[fixed_thres_spec < 0] = 0.0
-        
-        datasets[k]['stim']['tfrep']['original_spec'] = original_spec
-        datasets[k]['stim']['tfrep']['thres_spec'] = thres_spec
-        datasets[k]['stim']['tfrep']['fixed_thres_spec'] = fixed_thres_spec 
 
-        # @TODO: save as 'spec' from arg
+        datasets[k]['stim']['tfrep']['original_spec'] = original_spec
         datasets[k]['stim']['tfrep']['spec'] = thres_spec
+        assert np.max(thres_spec) <= DBNOISE, "the max after thresholding is still larger than DBNOISE!"
     
     # set dataset-wide values
     srData = {
