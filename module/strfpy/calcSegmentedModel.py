@@ -615,6 +615,183 @@ def generate_pred_score(
 
 # preproc function
 
+def compute_amp_dev_threshold(
+    srData,
+    option,
+    wHann=None,
+    seg_spec_lookup=None,
+    use_smooth_ampdev=True,
+    default_derivthresh=0.5,
+):
+    """ 
+    this function computes the derivative threshold of mic trial data
+    using the standard deviation of the amplitude derivative.  
+    there are four options:  
+        1. compute the standard deviation of concatenated trials 
+        by stimulus.  
+            i.e., trials of the same stimulus have the same derivthresh, and
+            different stimuli may have different derivthresh;  
+        2. compute the standard deviation of concatenated trials 
+        across **all** trials and **all** stim.  
+            i.e., all trials of the entire srData will have the same derivthresh. 
+        3. compute the standard deviation of the amplitude derivative for each trial separately, 
+        and assign the std as the derivthresh for each trial. 
+        4. use a default derivative threshold for all trials.
+
+    parameters
+    ----------
+    srData: dict
+        the srData dictionary containing the stimulus-response data.
+    option: str
+        the option for computing the derivative threshold, either "by_stim" or "all_trials" or "per_trial"
+    wHann: np.ndarray or None
+        the Hanning window to use for smoothing the PSTH. If None, a Hanning
+            window of size smWindow will be created and used.
+    use_smooth_ampdev: bool
+        whether to smooth the amplitude derivative before computing the standard deviation.
+    """
+    
+    # check length of unique stims and number of trials. 
+    st_stim_names = [ds['stim']['rawFile'] for ds in srData['datasets']]
+    unique_stims = list(dict.fromkeys(st_stim_names))
+    print(f"there are {len(unique_stims)} unique stims and {len(srData['datasets'])} trials.")
+
+    # very crude way, if the number of trials == unique number of stims,
+    if len(unique_stims) == len(srData['datasets']):
+        if option == "default":
+            print(f"use default derivative threshold of {default_derivthresh} for all trials.")
+    if len(unique_stims) < len(srData['datasets']):
+        if option == "default":
+            print(f"\nWARNING: did you mean to use the default threshold of {default_derivthresh} for all trials?")
+            print(f"\nWARNING: did you mean to use the default threshold of {default_derivthresh} for all trials?")
+            print("will probably run into empty array error.")
+
+
+    def choose_spectro(option, seg_spec_lookup, i):
+        if seg_spec_lookup is not None:
+            if option in ["by_stim", "all_trials", "per_trial"]:
+                # the spectro should be already computed in srData
+                raise ValueError(
+                    f"seg_spec_lookup should not be provided when option is {option}"
+                )
+            spectro = np.asarray(seg_spec_lookup[srData["datasets"][i]["stim"]["rawFile"]].data).T
+        else:
+            spectro = np.copy(srData["datasets"][i]["stim"]["tfrep"]["spec"])
+        return spectro
+    
+    # ========== compute the derivative threshold based on the option selected ==========
+    if option in ["all_trials", "default"]:
+        # concatenate the ampdev of all trials across all stim
+        ampdev_concat = []
+        for i in range(len(srData['datasets'])):
+            events = dict(
+            {
+                "index": [],
+                "feature": [[]],
+            })
+            
+            # the spectro should be already computed in srData
+            spectro = choose_spectro(option, seg_spec_lookup, i)
+            
+            ampenv = np.mean(spectro, axis=0)
+            ampenv = np.convolve(ampenv, wHann, mode="same")
+            
+            ampdev = ampenv[1:] - ampenv[0:-1]
+            
+            events['raw_ampdev'] = ampdev
+            events['ampenv'] = ampenv
+            if use_smooth_ampdev:
+                ampdev = np.convolve(ampdev, wHann, mode="same")
+            events['ampdev'] = ampdev
+            ampdev_concat.extend(ampdev)
+            srData['datasets'][i]['stim']['events'] = events
+
+        if option == "default":
+            # assign the default derivative threshold to all trials in srData
+            derivStd = default_derivthresh
+
+        elif option == "all_trials":
+            ampdev_concat = np.array(ampdev_concat)
+            std_dev = np.std(ampdev_concat)
+            derivStd = std_dev
+
+        for i in range(len(srData['datasets'])):
+            srData['datasets'][i]['stim']['derivStd'] = derivStd
+        print(f"Derivative Threshold (std) across all trials and stims: {derivStd:.2f}")
+        
+    elif option == "by_stim":
+        # fpr this option,
+        # compute the std of the concatenated ampdev, and
+        # assign the std to all trials of the same stim.
+        for stim in unique_stims:
+            # get the indices of trials with the same stim
+            trial_indices = [
+                i for i, name in enumerate(st_stim_names) if name == stim
+            ]
+            
+            # concatenate the ampdev of all trials with the same stim
+            ampdev_concat = []
+            for i in trial_indices:
+                events = dict(
+                {
+                    "index": [],
+                    "feature": [[]],
+                })
+                # the spectro should be already computed in srData
+                spectro = choose_spectro(option, seg_spec_lookup, i)
+                
+                ampenv = np.mean(spectro, axis=0)
+                ampenv = np.convolve(ampenv, wHann, mode="same")
+                
+                ampdev = ampenv[1:] - ampenv[0:-1]
+                
+                events['raw_ampdev'] = ampdev
+                events['ampenv'] = ampenv
+                if use_smooth_ampdev:
+                    ampdev = np.convolve(ampdev, wHann, mode="same")
+                events['ampdev'] = ampdev
+
+                ampdev_concat.extend(ampdev)
+                srData['datasets'][i]['stim']['events'] = events
+            ampdev_concat = np.array(ampdev_concat)
+            
+            std_dev = np.std(ampdev_concat)
+            # assign the std_dev to all trials of the same stim
+            
+            for i in trial_indices:
+                srData['datasets'][i]['stim']['derivStd'] = std_dev
+
+            print(f"Stimulus: {stim}, Derivative Threshold (std): {std_dev:.2f}")
+
+    elif option == "per_trial":
+        # compute the standard deviation of the amplitude derivative for each trial separately
+        for i in range(len(srData['datasets'])):
+            events = dict(
+            {
+                "index": [],
+                "feature": [[]],
+            })
+            # the spectro should be already computed in srData
+            spectro = choose_spectro(option, seg_spec_lookup, i)
+            
+            ampenv = np.mean(spectro, axis=0)
+            ampenv = np.convolve(ampenv, wHann, mode="same")
+            
+            ampdev = ampenv[1:] - ampenv[0:-1]
+            events['raw_ampdev'] = ampdev
+            events['ampenv'] = ampenv
+            if use_smooth_ampdev:
+                ampdev = np.convolve(ampdev, wHann, mode="same")
+            events['ampdev'] = ampdev
+            srData['datasets'][i]['stim']['events'] = events
+
+            std_dev = np.std(ampdev)
+            srData['datasets'][i]['stim']['derivStd'] = std_dev
+
+    else:
+        raise ValueError("option must be 'default', 'by_stim' or 'all_trials' or 'per_trial'")
+    
+    
 
 def preprocess_srData(
     srData,
@@ -626,7 +803,8 @@ def preprocess_srData(
     seg_spec_lookup=None,
     smWindow=31,
     smooth_ampdev=False,
-    std_devthresh=False,
+    derivthresh_option=None,
+
     ):
     """
     Preprocesses stimulus-response data by segmenting the stimulus based on its envelope, calculating the spectrogram,
@@ -667,16 +845,21 @@ def preprocess_srData(
     )  # The 31 ms (number of points) hanning window used to smooth the PSTH
     wHann = wHann / sum(wHann)
 
+
+    # compute ampenv, ampdev, and derivative threshold and save in srData
+    compute_amp_dev_threshold(
+        srData,
+        option=derivthresh_option,
+        wHann=wHann,
+        seg_spec_lookup=seg_spec_lookup,
+        use_smooth_ampdev=smooth_ampdev,
+        default_derivthresh=derivativeThresh,   #0.5
+    )
+
     pairCount = len(srData["datasets"])  # number of stim/response pairs
 
     for iSet in tqdm(range(pairCount), total=pairCount):
-        events = dict(
-            {
-                "index": [],
-                "feature": [[]],
-            }
-        )
-
+        
         # Stimulus wave file and amplitude enveloppe from spectrogram
         # waveFile = srData['datasets'][iSet]['stim']['rawFile']
         # fs , soundStim = wavfile.read(waveFile)
@@ -695,24 +878,15 @@ def preprocess_srData(
         # set the y ticks to freq
         nFreqs = len(srData["datasets"][iSet]["stim"]["tfrep"]["f"])
 
-        ampenv = np.mean(seg_spectro, axis=0)
         ampfs = srData["datasets"][iSet]["stim"]["sampleRate"]
 
         # nSound = int((respChunkLen)*fs/ampfs)   # number of time points in sound chunks - should be the same for all stimulus-response pairs
 
-        ampenv = np.convolve(ampenv, wHann, mode="same")
-        ampdev = ampenv[1:] - ampenv[0:-1]
-        events['raw_ampdev'] = ampdev
-        #  ==> for trial mic data, try these:
-        if smooth_ampdev:
-            ampdev = np.convolve(ampdev, wHann, mode="same")
-        # print(np.std(ampdev))
-        if std_devthresh:
-            derivativeThresh = np.std(ampdev)
-        #  <==
-        # print(derivativeThresh)
-        events['ampenv'] = ampenv
-        events['ampdev'] = ampdev
+        # read ampenv, ampdev, and threshold from events
+        events = srData["datasets"][iSet]["stim"]["events"]
+        ampenv = events['ampenv']
+        ampdev = events["ampdev"]
+        derivativeThresh = srData["datasets"][iSet]["stim"]["derivStd"]
     
         # Find peaks and troughs
         peakInd, peakVals = find_peaks(
