@@ -806,19 +806,52 @@ def preprocess_srData(
     derivthresh_option=None,
 
     ):
-    """
-    Preprocesses stimulus-response data by segmenting the stimulus based on its envelope, calculating the spectrogram,
+    """ Preprocesses stimulus-response data by segmenting the stimulus based on its envelope, calculating the spectrogram,
     PSTH (Peri-Stimulus Time Histogram), and MPS (Modulation Power Spectrum).
-    Parameters:
-    srData (dict): Dictionary containing stimulus-response data.
-    plot (bool, optional): If True, plots the results. Default is False.
-    respChunkLen (int, optional): Total chunk length (including segment buffer) in number of points. Default is 150.
-    segmentBuffer (int, optional): Number of points on each side of segment for response and MPS. Default is 25.
-    tdelta (int, optional): Time delta to offset the events. Default is 0.
-    seg_spec_lookup (dict, optional): Dictionary containing the spectrogram for each stimulus to be used for segmentation
-    smWindow (int, optional): Size of the smoothing window used to get a smoothed PSTH
-    Returns:
+    
+    1. computes the amplitude envelope from the spectrogram and its derivtive 
+    2. identifies event (sound onset/offset) by detecting peaks/troughs in the derivative of the envelope
+    3. extracts the spectrogram windows around the detected events.  
+    4. for events, compute logdowmsampled specs and MPS
+    5. psth smoothing
+    
+    Parameters
+    ----------
+    srData : dict
+        Dictionary containing stimulus-response data.  
+    plot : bool, optional
+        If True, plots the results. Default is False. 
+    respChunkLen : int, optional
+        Total chunk length (including segment buffer) in number of points (default is 150).
+    segmentBuffer : int, optional
+        Number of points on each side of segment for response and MPS (default is 25).
+    tdelta : int, optional
+        Time delta to offset the events. (default is 0).
+    plotFlg : bool, optional
+        If True, plots the results (default is False).
+    seg_spec_lookup : dict, optional
+        Dictionary containing the spectrogram for each stimulus to be used for segmentation
+        If None, uses spectrograms from srData (default is None).
+    smWindow : int, optional
+        Size of the smoothing window used to get a smoothed PSTH.  (default is 31).
+    smooth_ampdev : bool, optional
+        If True, smooths the amplitude derivative before peak detection (default is False).
+    derivthresh_option : str, optional
+        Method for computing the derivative threshold for event detection. 
+        Options are:
+        - "default": Uses a fixed threshold (0.5) for all trials. 
+            this should be for efferent copy audio only.
+        - "by_stim": Computes separate threshold for each unique stimulus
+            all trials within the stimulus hav the same threshold
+        - "all_trials": Computes a single threshold across all trials
+        - "per_trial": Computes separate threshold for each trial
+            each trial within the same stim may have different threshold.
+        (default is None).
+    
+    Returns
+    -------
     None: The function modifies the srData dictionary in place, adding preprocessed data to it.
+        added events 
     """
     # PREPROCESSING
     # - Segmentation of the stimulus based on the envelope
