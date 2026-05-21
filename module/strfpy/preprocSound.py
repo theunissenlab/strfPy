@@ -441,14 +441,14 @@ def generate_srData_nwb_single_trials(nwb, intervals_name, unit_id, balanceFlg =
 
     # Threshold spectrogram - this should probably be elsewhere or at least consistent with log
     for k in range(len(datasets)):
-        original_spec = datasets[k]['stim']['tfrep']['spec'].copy()
+        # original_spec = datasets[k]['stim']['tfrep']['spec'].copy()
         
         # Threshold spec: shifted relative to max amplitude across all stimuli
         # max_stim_amp is the same for all trials!
         thres_spec = original_spec - max_stim_amp + DBNOISE
         thres_spec[thres_spec < 0] = 0.0
 
-        datasets[k]['stim']['tfrep']['original_spec'] = original_spec
+        # datasets[k]['stim']['tfrep']['original_spec'] = original_spec
         datasets[k]['stim']['tfrep']['spec'] = thres_spec
         assert np.max(thres_spec) <= DBNOISE, "the max after thresholding is still larger than DBNOISE!"
     
