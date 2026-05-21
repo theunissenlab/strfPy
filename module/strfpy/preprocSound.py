@@ -441,7 +441,7 @@ def generate_srData_nwb_single_trials(nwb, intervals_name, unit_id, balanceFlg =
 
     # Threshold spectrogram - this should probably be elsewhere or at least consistent with log
     for k in range(len(datasets)):
-        # original_spec = datasets[k]['stim']['tfrep']['spec'].copy()
+        original_spec = datasets[k]['stim']['tfrep']['spec'].copy()
         
         # Threshold spec: shifted relative to max amplitude across all stimuli
         # max_stim_amp is the same for all trials!
