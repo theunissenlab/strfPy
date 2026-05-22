@@ -1250,7 +1250,6 @@ def generate_event_pca_feature(srData, event_types, feature, pca = None, npcs=20
 
 # fitting funcitons
 def fit_seg(
-<<<<<<< HEAD
     srData,
     nPoints,
     x_feature,
@@ -1267,10 +1266,6 @@ def fit_seg(
     np.array([0.2, 0.1, 0.05, 0.01, 0.005, 0.001, 0.0005, 0.0001, 0.00001, 0]),
     store_error = False
 ):
-=======
-    srData, nPoints, x_feature, y_feature = 'psth_smooth', y_R2feature = None, y_R2SingleTrialFeature = None, snrEst = 1.0, kernel = 'Kernel', basis_args = [], nD=2, pair_train_set=None, tol = np.array([0.2, 0.1, 0.05, 0.01, 0.005, 0.001, 0.0005, 0.0001, 0.00001, 0]),
-store_error = False):
->>>>>>> kailinzhuang
     """
     Fits a segmented model to the given data using ridge regresseion and leave one out cross-validation
     Parameters:
