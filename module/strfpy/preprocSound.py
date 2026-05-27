@@ -357,7 +357,7 @@ def generate_srData_nwb_single_trials(nwb, intervals_name, unit_id, balanceFlg =
     if balanceFlg:
         all_trials = balance_trials(all_trials, ['stimuli_name'])
     
-
+    print(f"unit {unit_id}: {len(all_trials)} valid trials")
     # lets get the precomputed spectrograms
     spectrograms = nwb.processing['stimuli_spectrograms']
 
