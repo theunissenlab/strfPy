@@ -666,6 +666,9 @@ def compute_amp_dev_threshold(
             print(f"\nWARNING: did you mean to use the default threshold of {default_derivthresh} for all trials?")
             print("will probably run into empty array error.")
 
+    if option is None:
+        print(f"\nWARNING: derivative option is None, will use default derivative threshold of {default_derivthresh} for all trials.")
+        option = "default"
 
     def choose_spectro(option, seg_spec_lookup, i):
         if seg_spec_lookup is not None:
