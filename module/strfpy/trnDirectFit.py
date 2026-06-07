@@ -1,4 +1,5 @@
 import os
+import tempfile
 import numpy as np
 
 from scipy.signal import detrend
@@ -14,16 +15,29 @@ def trnDirectFit(modelParams, globalDat):
 
     Args:
     - modelParams: dictionary containing model parameters
-    - datIdx: indices of the data to be used for training
-    - *args: optional additional arguments
+    - globalDat: global data structure from strfData()
 
     Returns:
     - modelParams: updated dictionary of model parameters
+    - options: dict with outputDir, tolerances, sparsenesses
     """
 
     if modelParams['type'] != 'lin' or modelParams['outputNL'] != 'linear':
         raise ValueError('trnDirectFit only works for linear models with no output nonlinearity!')
-        
+
+    # Apply defaults for parameters not set by linInit
+    modelParams.setdefault('ampsamprate', 1000)
+    modelParams.setdefault('respsamprate', modelParams['ampsamprate'])
+    modelParams.setdefault('Tol_val', [0.1, 0.05, 0.01, 0.005, 1e-3, 5e-4, 1e-4, 5e-5])
+    modelParams.setdefault('sparsenesses', [0, 1, 2, 6])
+    modelParams.setdefault('timevary_PSTH', 0)
+    modelParams.setdefault('smooth_rt', 41)
+    modelParams.setdefault('infoFreqCutoff', 100)
+    modelParams.setdefault('infoWindowSize', 0.500)
+    modelParams.setdefault('TimeLagUnit', 'frame')
+    modelParams.setdefault('outputPath', tempfile.gettempdir())
+    modelParams.setdefault('TimeLag', int(np.ceil(np.max(np.abs(modelParams['delays'])))))
+
     if modelParams['respsamprate'] != modelParams['ampsamprate']:
         raise ValueError('trnDirectFit: Stimulus and response sampling rate must be equal!')
 
@@ -161,20 +175,25 @@ def trnDirectFit(modelParams, globalDat):
 
         ## get best strf
     
-    print('Best STRF found at tol=%f, sparseness=%d, info=%.2f bits R2=%.4f\n' % (bestTol, bestSparseness, bestInfoVal, bestR2CV))
+    #print(f'Best STRF found at tol={bestTol:f}, sparseness={int(bestSparseness)}, info={float(bestInfoVal):.2f} bits R2={float(bestR2CV):.4f}')
     
     modelParams['w1'] = bestStrf
     modelParams['R2CV'] = R2CV
     modelParams['stimAvg'] = stimAvg
     modelParams['funcName'] = 'trnDirectFit'
-    
+
     if not modelParams['timevary_PSTH']:
         modelParams['b1'] = respAvg
     else:
         modelParams['b1'] = tvRespAvg[p, :mresp.shape[1]]
 
- 
-    return modelParams
+    options = {
+        'outputDir': modelParams['outputPath'],
+        'tolerances': modelParams['Tol_val'],
+        'sparsenesses': modelParams['sparsenesses'],
+    }
+
+    return modelParams, options
     
 
 
@@ -198,7 +217,7 @@ def df_fast_filter_filter(forward, forwardJN_std, nstd):
 def conv_strf(allstim, delays, strf, groupIndex):
     nDatasets = len(np.unique(groupIndex))
     timeLen = allstim.shape[0]
-    a = np.zeros((timeLen, 1), dtype=complex)
+    a = np.zeros((timeLen, 1))
     
     for k in range(nDatasets):
         rng = np.where(groupIndex[0] == k+1)[0]
@@ -310,7 +329,7 @@ def df_mtparam(*varg):
     if nargs < 4 or P[3] is None:
         WinLength = nFFT
     else:
-        WinLength = P[3], nFFT, Fs, WinLength, nOverlap, NW, Detrend, nTapers
+        WinLength = P[3]
     if nargs < 5 or P[4] is None:
         nOverlap = WinLength // 2
     else:

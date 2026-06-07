@@ -259,9 +259,9 @@ def df_cal_AVG(DDS, PARAMS, nband=None, psth_option=None, lin_flag=1, sil_window
         # then calculate response_avg
         if DDS[n]["ntrials"] > 1:
             temp = np.sum(
-                psth_rec, axis=1
-            )  # Given that the stimulus auto correlation multiplies by ntrials - this should be sum and not mean - to be checked... the ntrials might have to be incorporated in weights...
-            psth.append(temp[:nt])
+                psth_rec, axis=0
+            )  # Sum across trials at each time point to get the total PSTH
+            psth.append(temp[np.newaxis, :nt])
         else:
             psth.append(psth_rec[:nt])
         

@@ -57,7 +57,12 @@ def srdata2strflab(srData, useRaw=False, preprocOptions={}):
 
     for k in range(pairCount):
         ds = srData['datasets'][k]
-        numTrials = min(numTrials, len(ds['resp']['trialDurations']))
+        if 'trialDurations' in ds['resp']:
+            numTrials = min(numTrials, len(ds['resp']['trialDurations']))
+        else:
+            numTrials = len(ds['resp']['rawSpikeTimes'])
+
+        #numTrials = min(numTrials, len(ds['resp']['trialDurations']))
         totalStimLength += ds['stim']['tfrep']['spec'].shape[1]
         totalRespLength += len(ds['resp']['psth'])
 

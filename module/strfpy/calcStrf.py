@@ -24,7 +24,7 @@ def df_cal_Strf(params, fstim, fstim_JN, fstim_spike, stim_spike_JNf, stim_spike
     strfHJN = np.zeros(stim_spike_JNsize, dtype=np.float64)
     cums = np.zeros((nf, nb+1), dtype=np.float64)
     ranktest = np.zeros((1, nf), dtype=np.float64)
-    stimnorm = np.zeros((1, nf), dtype=np.float64)  
+    stimnorm = np.zeros((1, nf), dtype=np.float64)
 
     # Generate the index to fill in the stimulus auto-correlation matrix
     # np_trill_indices does not work because it organizes indices differently
@@ -46,7 +46,7 @@ def df_cal_Strf(params, fstim, fstim_JN, fstim_spike, stim_spike_JNf, stim_spike
         stim_mat = stim_mat - np.diag(np.diag(stim_mat)) + stim_mat.conj().T
 
         stimnorm[0,iff] =  np.linalg.norm(stim_mat)
-    
+
 
     ranktol = tol * np.max(stimnorm)
     for iff in range(nf):
@@ -80,7 +80,7 @@ def df_cal_Strf(params, fstim, fstim_JN, fstim_spike, stim_spike_JNf, stim_spike
             is_mat[ii,ii] = 1.0/(s[ii] + ranktol)
             # is_mat[ii,ii ] = 1.0   # Testing without any stimulus normalization.
         
-        h = v @ is_mat @ (u @ cross_vect)
+        h = (u @ is_mat @ (v @ cross_vect)).squeeze()
         
         # Repeat for JN values
         hJN = np.zeros((nJN, nb), dtype=np.complex128)
@@ -91,7 +91,7 @@ def df_cal_Strf(params, fstim, fstim_JN, fstim_spike, stim_spike_JNf, stim_spike
             u,s,v = np.linalg.svd(stim_mat_JN)
             for ii in range(nb):
                 is_mat[ii,ii] = 1.0/(s[ii] + ranktol)
-            hJN[iJN,:] = np.transpose(v @ is_mat @ (u @ cross_vectJN[iJN,:].reshape(-1,1)))
+            hJN[iJN,:] = (u @ is_mat @ (v @ cross_vectJN[iJN,:].reshape(-1,1))).squeeze()
 
   
         for ii in range(nb):
