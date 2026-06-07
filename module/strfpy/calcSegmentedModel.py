@@ -1787,7 +1787,7 @@ def process_unit_strf(nwb_file, unit_name, model_dir=None, trials_type='playback
     preprocess_srData(srData, plot=False, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = False)
 
     # Estimate the single trial SNR for this data set
-    snr = preprocSound.estimate_SNR(srData)
+    snr, *_ = preprocSound.estimate_SNR(srData)
     evOne= snr/(snr + 1)     # The expected variance (R2-ceiling) for one trial
 
     # The Classic STRF
@@ -1816,7 +1816,7 @@ def process_unit_strf(nwb_file, unit_name, model_dir=None, trials_type='playback
 
 
     # Run direct fit optimization on all of the data
-    modelParams = trnDirectFit.trnDirectFit(modelParams, globDat)
+    modelParams, _ = trnDirectFit.trnDirectFit(modelParams, globDat)
     r2STRF = modelParams['R2CV'].max()
     if isinstance(nwb_file, nwb.NWBFile):
         identifier = nwb_file.identifier
@@ -1944,7 +1944,7 @@ def process_unit(nwb_file, unit_name, model_dir=None, trials_type='playback_tria
 
 
     # Run direct fit optimization on all of the data
-    modelParams = trnDirectFit.trnDirectFit(modelParams, globDat)
+    modelParams, _ = trnDirectFit.trnDirectFit(modelParams, globDat)
     r2STRF = modelParams['R2CV'].max()
     if isinstance(nwb_file, nwb.NWBFile):
         identifier = nwb_file.identifier
@@ -2013,7 +2013,7 @@ def process_unit_nostrf(nwb_file, unit_name, model_dir=None, trials_type='playba
     preprocess_srData(srData, plot=False, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = False)
 
     # Estimate the single trial SNR for this data set
-    snr = preprocSound.estimate_SNR(srData)
+    snr, *_ = preprocSound.estimate_SNR(srData)
     evOne= snr/(snr + 1)     # The expected variance (R2-ceiling) for one trial
 
     # Fit the segmentation (on-off here) kernel (impulse response)
