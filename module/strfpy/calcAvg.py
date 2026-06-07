@@ -121,7 +121,7 @@ def calculateLeaveOneOutAverages(
     # smooth the avg responses with the hann_window
     if apply_resp_smoothing:
         # create a window to do smoothing
-        hann_window = np.hanning(smooth_rt) / np.sum(np.hanning(smooth_rt))
+        hann_window = hann(smooth_rt) / np.sum(hann(smooth_rt))
         avg_resp_minus_one = np.apply_along_axis(
             lambda m: np.convolve(m, hann_window, mode="same"),
             axis=1,
@@ -300,7 +300,7 @@ def df_cal_AVG(DDS, PARAMS, nband=None, psth_option=None, lin_flag=1, sil_window
     else:
         cutsize = 1
     halfwinsize = np.floor(psthsmoothconst / 2)
-    wind1 = np.hanning(psthsmoothconst) / np.sum(np.hanning(psthsmoothconst))
+    wind1 = hann(psthsmoothconst) / np.sum(hann(psthsmoothconst))
 
     for nn in range(len(psth)):
         count_minus_one = sum_count_psth - count_psth[nn, :]
