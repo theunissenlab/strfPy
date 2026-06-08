@@ -1186,7 +1186,8 @@ store_error = False):
                 # ridge regression - regularized normal equation
                 for ii in range(nb):
                     is_mat[ii,ii] = 1.0/(s[iS, ii] + tolval)       
-                hJN[iS,:] = v[iS, :, :].T @ is_mat @ (u[iS, :, :].T @ Cxy[iS,:])
+                # hJN[iS,:] = v[iS, :, :].T @ is_mat @ (u[iS, :, :].T @ Cxy[iS,:])
+                hJN[iS,:] = u[iS, :, :] @ is_mat @ (v[iS, :, :] @ Cxy[iS,:])
 
             # Find x and actual y for leave out set to asses fit
             pair = srData["datasets"][iSet]
@@ -1267,7 +1268,8 @@ store_error = False):
         uAll,sAll,vAll = np.linalg.svd(CxxAll)
         for ii in range(nb):
             is_mat[ii,ii] = 1.0/(sAll[ii] + ranktol[itMax])
-        hJNAll = vAll.T @ is_mat @ (uAll.T @ CxyAll)
+        # hJNAll = vAll.T @ is_mat @ (uAll.T @ CxyAll)
+        hJNAll = uAll @ is_mat @ (vAll @ CxyAll)
 
     # The bias term
     b0 = -hJNAll @ (xsumAll/countAll) + (ysumAll/countAll)
@@ -1448,7 +1450,8 @@ def fit_seg_segId_model(
             for ii in range(nb):
                 is_mat[ii,ii] = 1.0/(s[iS, ii] + tolval)
         
-            hJN[iS,:] = v[iS, :, :] @ is_mat @ (u[iS, :, :] @ Cxy[iS,:])
+            # hJN[iS,:] = v[iS, :, :] @ is_mat @ (u[iS, :, :] @ Cxy[iS,:])
+            hJN[iS,:] = u[iS, :, :] @ is_mat @ (v[iS, :, :] @ Cxy[iS,:])
 
             # Find x and actual y:
             pair = srData["datasets"][iSet]
@@ -1500,7 +1503,8 @@ def fit_seg_segId_model(
     for ii in range(nb):
         is_mat[ii,ii] = 1.0/(sAll[ii] + ranktol[itMax])
     
-    hJNAll = vAll @ is_mat @ (uAll @ (CxyAll/countAll))
+    # hJNAll = vAll @ is_mat @ (uAll @ (CxyAll/countAll))
+    hJNAll = uAll @ is_mat @ (vAll @ (CxyAll/countAll))
     # The bias term
     b0 = -hJNAll @ (xsumAll/countAll) + (ysumAll/countAll)
     segModel['weights'] = hJNAll
@@ -1704,7 +1708,8 @@ def fit_seg_segId_model(
             for ii in range(nb):
                 is_mat[ii,ii] = 1.0/(s[iS, ii] + tolval)
         
-            hJN[iS,:] = v[iS, :, :] @ is_mat @ (u[iS, :, :] @ Cxy[iS,:])
+            # hJN[iS,:] = v[iS, :, :] @ is_mat @ (u[iS, :, :] @ Cxy[iS,:])
+            hJN[iS,:] = u[iS, :, :] @ is_mat @ (v[iS, :, :] @ Cxy[iS,:])
 
             # Find x and actual y:
             pair = srData["datasets"][iSet]
@@ -1761,7 +1766,8 @@ def fit_seg_segId_model(
     for ii in range(nb):
         is_mat[ii,ii] = 1.0/(sAll[ii] + ranktol[itMax])
     
-    hJNAll = vAll @ is_mat @ (uAll @ (CxyAll/countAll))
+    # hJNAll = vAll @ is_mat @ (uAll @ (CxyAll/countAll))
+    hJNAll = uAll @ is_mat @ (vAll @ (CxyAll/countAll))
     # The bias term
     b0 = -hJNAll @ (xsumAll/countAll) + (ysumAll/countAll)
     segIDModel['weights'] = hJNAll
