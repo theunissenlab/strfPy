@@ -137,7 +137,7 @@ def df_cal_CrossCorr(DS, PARAMS, stim_avg=None, avg_psth=None, psth=None,
     filecount = len(DS)
     
     # temporal axis range
-    tot_corr = int(np.diff(twindow).item() + 1)
+    tot_corr = int(np.diff(twindow)[0] + 1)
     # spatial axis range
     spa_corr = int(nband)
     
@@ -311,8 +311,8 @@ def df_fft_AutoCrossCorr(stim, stim_JN, stim_spike, CSR_JN, TimeLag, NBAND, nstd
         itend = nf
         below = 0
         for it in range(nf):
-            stim_spike_JNvf[ib,it] = JNv*np.cov(np.transpose(np.real(stim_spike_JNf[ib,it,:])))
-            + j*JNv*np.cov(np.transpose(np.imag(stim_spike_JNf[ib,it,:])))
+            stim_spike_JNvf[ib,it] = (JNv*np.cov(np.transpose(np.real(stim_spike_JNf[ib,it,:])))
+                + j*JNv*np.cov(np.transpose(np.imag(stim_spike_JNf[ib,it,:]))))
             rmean = np.real(stim_spike_JNmf[ib,it])
             rstd = np.sqrt(np.real(stim_spike_JNvf[ib,it]))
             imean = np.imag(stim_spikef[ib,it])

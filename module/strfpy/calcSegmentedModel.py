@@ -1449,7 +1449,8 @@ def fit_seg(
                 # ridge regression - regularized normal equation
                 for ii in range(nb):
                     is_mat[ii,ii] = 1.0/(s[iS, ii] + tolval)       
-                hJN[iS,:] = v[iS, :, :].T @ is_mat @ (u[iS, :, :].T @ Cxy[iS,:])
+                # hJN[iS,:] = v[iS, :, :].T @ is_mat @ (u[iS, :, :].T @ Cxy[iS,:])
+                hJN[iS,:] = u[iS, :, :] @ is_mat @ (v[iS, :, :] @ Cxy[iS,:])
 
             # Find x and actual y for leave out set to asses fit
             pair = srData["datasets"][iSet]
@@ -1553,7 +1554,8 @@ def fit_seg(
         uAll,sAll,vAll = np.linalg.svd(CxxAll)
         for ii in range(nb):
             is_mat[ii,ii] = 1.0/(sAll[ii] + ranktol[itMax])
-        hJNAll = vAll.T @ is_mat @ (uAll.T @ CxyAll)
+        # hJNAll = vAll.T @ is_mat @ (uAll.T @ CxyAll)
+        hJNAll = uAll @ is_mat @ (vAll @ CxyAll)
 
     # The bias term
     b0 = -hJNAll @ (xsumAll/countAll) + (ysumAll/countAll)
@@ -2035,7 +2037,8 @@ def fit_seg_segId_model(
             for ii in range(nb):
                 is_mat[ii,ii] = 1.0/(s[iS, ii] + tolval)
         
-            hJN[iS,:] = v[iS, :, :] @ is_mat @ (u[iS, :, :] @ Cxy[iS,:])
+            # hJN[iS,:] = v[iS, :, :] @ is_mat @ (u[iS, :, :] @ Cxy[iS,:])
+            hJN[iS,:] = u[iS, :, :] @ is_mat @ (v[iS, :, :] @ Cxy[iS,:])
 
             # Find x and actual y:
             pair = srData["datasets"][iSet]
@@ -2087,7 +2090,8 @@ def fit_seg_segId_model(
     for ii in range(nb):
         is_mat[ii,ii] = 1.0/(sAll[ii] + ranktol[itMax])
     
-    hJNAll = vAll @ is_mat @ (uAll @ (CxyAll/countAll))
+    # hJNAll = vAll @ is_mat @ (uAll @ (CxyAll/countAll))
+    hJNAll = uAll @ is_mat @ (vAll @ (CxyAll/countAll))
     # The bias term
     b0 = -hJNAll @ (xsumAll/countAll) + (ysumAll/countAll)
     segModel['weights'] = hJNAll
@@ -2291,7 +2295,8 @@ def fit_seg_segId_model(
             for ii in range(nb):
                 is_mat[ii,ii] = 1.0/(s[iS, ii] + tolval)
         
-            hJN[iS,:] = v[iS, :, :] @ is_mat @ (u[iS, :, :] @ Cxy[iS,:])
+            # hJN[iS,:] = v[iS, :, :] @ is_mat @ (u[iS, :, :] @ Cxy[iS,:])
+            hJN[iS,:] = u[iS, :, :] @ is_mat @ (v[iS, :, :] @ Cxy[iS,:])
 
             # Find x and actual y:
             pair = srData["datasets"][iSet]
@@ -2348,7 +2353,8 @@ def fit_seg_segId_model(
     for ii in range(nb):
         is_mat[ii,ii] = 1.0/(sAll[ii] + ranktol[itMax])
     
-    hJNAll = vAll @ is_mat @ (uAll @ (CxyAll/countAll))
+    # hJNAll = vAll @ is_mat @ (uAll @ (CxyAll/countAll))
+    hJNAll = uAll @ is_mat @ (vAll @ (CxyAll/countAll))
     # The bias term
     b0 = -hJNAll @ (xsumAll/countAll) + (ysumAll/countAll)
     segIDModel['weights'] = hJNAll
@@ -2374,7 +2380,7 @@ def process_unit_strf(nwb_file, unit_name, model_dir=None, trials_type='playback
     preprocess_srData(srData, plot=False, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = False)
 
     # Estimate the single trial SNR for this data set
-    snr = preprocSound.estimate_SNR(srData)
+    snr, *_ = preprocSound.estimate_SNR(srData)
     evOne= snr/(snr + 1)     # The expected variance (R2-ceiling) for one trial
 
     # The Classic STRF
@@ -2403,7 +2409,7 @@ def process_unit_strf(nwb_file, unit_name, model_dir=None, trials_type='playback
 
 
     # Run direct fit optimization on all of the data
-    modelParams = trnDirectFit.trnDirectFit(modelParams, globDat)
+    modelParams, _ = trnDirectFit.trnDirectFit(modelParams, globDat)
     r2STRF = modelParams['R2CV'].max()
     if isinstance(nwb_file, nwb.NWBFile):
         identifier = nwb_file.identifier
@@ -2531,7 +2537,7 @@ def process_unit(nwb_file, unit_name, model_dir=None, trials_type='playback_tria
 
 
     # Run direct fit optimization on all of the data
-    modelParams = trnDirectFit.trnDirectFit(modelParams, globDat)
+    modelParams, _ = trnDirectFit.trnDirectFit(modelParams, globDat)
     r2STRF = modelParams['R2CV'].max()
     if isinstance(nwb_file, nwb.NWBFile):
         identifier = nwb_file.identifier
@@ -2600,7 +2606,7 @@ def process_unit_nostrf(nwb_file, unit_name, model_dir=None, trials_type='playba
     preprocess_srData(srData, plot=False, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = False)
 
     # Estimate the single trial SNR for this data set
-    snr = preprocSound.estimate_SNR(srData)
+    snr, *_ = preprocSound.estimate_SNR(srData)
     evOne= snr/(snr + 1)     # The expected variance (R2-ceiling) for one trial
 
     # Fit the segmentation (on-off here) kernel (impulse response)

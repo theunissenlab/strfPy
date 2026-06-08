@@ -20,11 +20,11 @@ def df_cal_Strf(params, fstim, fstim_JN, fstim_spike, stim_spike_JNf, stim_spike
     hJN = np.zeros((nJN, nb), dtype=np.complex128)
     ffor = np.zeros(stim_spike_size, dtype=np.complex128)
     fforJN = np.zeros(stim_spike_JNsize, dtype=np.complex128)
-    strfH = np.zeros(stim_spike_size, dtype = np.float64)
+    strfH = np.zeros(stim_spike_size, dtype=np.float64)
     strfHJN = np.zeros(stim_spike_JNsize, dtype=np.float64)
     cums = np.zeros((nf, nb+1), dtype=np.float64)
     ranktest = np.zeros((1, nf), dtype=np.float64)
-    stimnorm = np.zeros((1, nf), dtype=np.float64)  
+    stimnorm = np.zeros((1, nf), dtype=np.float64)
 
     # Generate the index to fill in the stimulus auto-correlation matrix
     # np_trill_indices does not work because it organizes indices differently
@@ -41,18 +41,18 @@ def df_cal_Strf(params, fstim, fstim_JN, fstim_spike, stim_spike_JNf, stim_spike
 
     # Find the maximum norm of all the matrices
     for iff in range(nf):
-        stim_mat = np.matrix(np.zeros((nb, nb), dtype=np.complex128))
+        stim_mat = np.zeros((nb, nb), dtype=np.complex128)
         stim_mat[(indrow, indcol)] = fstim[:, iff]
-        stim_mat = stim_mat - np.diag(np.diag(stim_mat)) + stim_mat.getH()
+        stim_mat = stim_mat - np.diag(np.diag(stim_mat)) + stim_mat.conj().T
 
         stimnorm[0,iff] =  np.linalg.norm(stim_mat)
-    
+
 
     ranktol = tol * np.max(stimnorm)
     for iff in range(nf):
-        stim_mat = np.matrix(np.zeros((nb, nb), dtype=np.complex128))
+        stim_mat = np.zeros((nb, nb), dtype=np.complex128)
         stim_mat[(indrow, indcol)] = fstim[:, iff]
-        stim_mat = stim_mat - np.diag(np.diag(stim_mat)) + stim_mat.getH()
+        stim_mat = stim_mat - np.diag(np.diag(stim_mat)) + stim_mat.conj().T
 
 
         for fb_indx in range(nb):
@@ -80,18 +80,18 @@ def df_cal_Strf(params, fstim, fstim_JN, fstim_spike, stim_spike_JNf, stim_spike
             is_mat[ii,ii] = 1.0/(s[ii] + ranktol)
             # is_mat[ii,ii ] = 1.0   # Testing without any stimulus normalization.
         
-        h = v @ is_mat @ (u @ cross_vect)
+        h = (u @ is_mat @ (v @ cross_vect)).squeeze()
         
         # Repeat for JN values
         hJN = np.zeros((nJN, nb), dtype=np.complex128)
         for iJN in range(nJN):
-            stim_mat_JN = np.matrix(np.zeros((nb, nb), dtype=np.complex128))
+            stim_mat_JN = np.zeros((nb, nb), dtype=np.complex128)
             stim_mat_JN[(indrow, indcol)] = fstim_JN[iJN][:, iff]
-            stim_mat_JN = stim_mat_JN - np.diag(np.diag(stim_mat_JN)) + stim_mat_JN.getH()
+            stim_mat_JN = stim_mat_JN - np.diag(np.diag(stim_mat_JN)) + stim_mat_JN.conj().T
             u,s,v = np.linalg.svd(stim_mat_JN)
             for ii in range(nb):
                 is_mat[ii,ii] = 1.0/(s[ii] + ranktol)
-            hJN[iJN,:] = np.transpose(v @ is_mat @ (u @ cross_vectJN[iJN,:].reshape(-1,1)))
+            hJN[iJN,:] = (u @ is_mat @ (v @ cross_vectJN[iJN,:].reshape(-1,1))).squeeze()
 
   
         for ii in range(nb):
