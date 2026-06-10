@@ -12,6 +12,7 @@ from sklearn.decomposition import PCA
 from sklearn.linear_model import RidgeCV
 import pynwb as nwb
 import pickle
+from tqdm import tqdm
 
 # Depednecies from Theunissen Lab
 # from soundsig.sound import BioSound
@@ -614,21 +615,246 @@ def generate_pred_score(
 
 # preproc function
 
+def compute_amp_dev_threshold(
+    srData,
+    option,
+    wHann=None,
+    seg_spec_lookup=None,
+    use_smooth_ampdev=True,
+    default_derivthresh=0.5,
+):
+    """ 
+    this function computes the derivative threshold of mic trial data
+    using the standard deviation of the amplitude derivative.  
+    there are four options:  
+        1. compute the standard deviation of concatenated trials 
+        by stimulus.  
+            i.e., trials of the same stimulus have the same derivthresh, and
+            different stimuli may have different derivthresh;  
+        2. compute the standard deviation of concatenated trials 
+        across **all** trials and **all** stim.  
+            i.e., all trials of the entire srData will have the same derivthresh. 
+        3. compute the standard deviation of the amplitude derivative for each trial separately, 
+        and assign the std as the derivthresh for each trial. 
+        4. use a default derivative threshold for all trials.
 
-def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, tdelta=0, plotFlg = False, seg_spec_lookup=None, smWindow=31):
+    parameters
+    ----------
+    srData: dict
+        the srData dictionary containing the stimulus-response data.
+    option: str
+        the option for computing the derivative threshold, either "by_stim" or "all_trials" or "per_trial"
+    wHann: np.ndarray or None
+        the Hanning window to use for smoothing the PSTH. If None, a Hanning
+            window of size smWindow will be created and used.
+    use_smooth_ampdev: bool
+        whether to smooth the amplitude derivative before computing the standard deviation.
     """
-    Preprocesses stimulus-response data by segmenting the stimulus based on its envelope, calculating the spectrogram,
+    
+    # check length of unique stims and number of trials. 
+    st_stim_names = [ds['stim']['rawFile'] for ds in srData['datasets']]
+    unique_stims = list(dict.fromkeys(st_stim_names))
+    print(f"there are {len(unique_stims)} unique stims and {len(srData['datasets'])} trials.")
+
+    # very crude way, if the number of trials == unique number of stims,
+    if len(unique_stims) == len(srData['datasets']):
+        if option == "default":
+            print(f"use default derivative threshold of {default_derivthresh} for all trials.")
+    if len(unique_stims) < len(srData['datasets']):
+        if option == "default":
+            print(f"\nWARNING: did you mean to use the default threshold of {default_derivthresh} for all trials?")
+            print(f"\nWARNING: did you mean to use the default threshold of {default_derivthresh} for all trials?")
+            print("will probably run into empty array error.")
+
+    if option is None:
+        print(f"\nWARNING: derivative option is None, will use default derivative threshold of {default_derivthresh} for all trials.")
+        option = "default"
+
+    def choose_spectro(option, seg_spec_lookup, i):
+        if seg_spec_lookup is not None:
+            if option in ["by_stim", "all_trials", "per_trial"]:
+                # the spectro should be already computed in srData
+                raise ValueError(
+                    f"seg_spec_lookup should not be provided when option is {option}"
+                )
+            spectro = np.asarray(seg_spec_lookup[srData["datasets"][i]["stim"]["rawFile"]].data).T
+        else:
+            spectro = np.copy(srData["datasets"][i]["stim"]["tfrep"]["spec"])
+        return spectro
+    
+    # ========== compute the derivative threshold based on the option selected ==========
+    if option in ["all_trials", "default"]:
+        # concatenate the ampdev of all trials across all stim
+        ampdev_concat = []
+        for i in range(len(srData['datasets'])):
+            events = dict(
+            {
+                "index": [],
+                "feature": [[]],
+            })
+            
+            # the spectro should be already computed in srData
+            spectro = choose_spectro(option, seg_spec_lookup, i)
+            
+            ampenv = np.mean(spectro, axis=0)
+            ampenv = np.convolve(ampenv, wHann, mode="same")
+            
+            ampdev = ampenv[1:] - ampenv[0:-1]
+            
+            events['raw_ampdev'] = ampdev
+            events['ampenv'] = ampenv
+            if use_smooth_ampdev:
+                ampdev = np.convolve(ampdev, wHann, mode="same")
+            events['ampdev'] = ampdev
+            ampdev_concat.extend(ampdev)
+            srData['datasets'][i]['stim']['events'] = events
+
+        if option == "default":
+            # assign the default derivative threshold to all trials in srData
+            derivStd = default_derivthresh
+
+        elif option == "all_trials":
+            ampdev_concat = np.array(ampdev_concat)
+            std_dev = np.std(ampdev_concat)
+            derivStd = std_dev
+
+        for i in range(len(srData['datasets'])):
+            srData['datasets'][i]['stim']['derivStd'] = derivStd
+        print(f"Derivative Threshold (std) across all trials and stims: {derivStd:.2f}")
+        
+    elif option == "by_stim":
+        # fpr this option,
+        # compute the std of the concatenated ampdev, and
+        # assign the std to all trials of the same stim.
+        for stim in unique_stims:
+            # get the indices of trials with the same stim
+            trial_indices = [
+                i for i, name in enumerate(st_stim_names) if name == stim
+            ]
+            
+            # concatenate the ampdev of all trials with the same stim
+            ampdev_concat = []
+            for i in trial_indices:
+                events = dict(
+                {
+                    "index": [],
+                    "feature": [[]],
+                })
+                # the spectro should be already computed in srData
+                spectro = choose_spectro(option, seg_spec_lookup, i)
+                
+                ampenv = np.mean(spectro, axis=0)
+                ampenv = np.convolve(ampenv, wHann, mode="same")
+                
+                ampdev = ampenv[1:] - ampenv[0:-1]
+                
+                events['raw_ampdev'] = ampdev
+                events['ampenv'] = ampenv
+                if use_smooth_ampdev:
+                    ampdev = np.convolve(ampdev, wHann, mode="same")
+                events['ampdev'] = ampdev
+
+                ampdev_concat.extend(ampdev)
+                srData['datasets'][i]['stim']['events'] = events
+            ampdev_concat = np.array(ampdev_concat)
+            
+            std_dev = np.std(ampdev_concat)
+            # assign the std_dev to all trials of the same stim
+            
+            for i in trial_indices:
+                srData['datasets'][i]['stim']['derivStd'] = std_dev
+
+            print(f"Stimulus: {stim}, Derivative Threshold (std): {std_dev:.2f}")
+
+    elif option == "per_trial":
+        # compute the standard deviation of the amplitude derivative for each trial separately
+        for i in range(len(srData['datasets'])):
+            events = dict(
+            {
+                "index": [],
+                "feature": [[]],
+            })
+            # the spectro should be already computed in srData
+            spectro = choose_spectro(option, seg_spec_lookup, i)
+            
+            ampenv = np.mean(spectro, axis=0)
+            ampenv = np.convolve(ampenv, wHann, mode="same")
+            
+            ampdev = ampenv[1:] - ampenv[0:-1]
+            events['raw_ampdev'] = ampdev
+            events['ampenv'] = ampenv
+            if use_smooth_ampdev:
+                ampdev = np.convolve(ampdev, wHann, mode="same")
+            events['ampdev'] = ampdev
+            srData['datasets'][i]['stim']['events'] = events
+
+            std_dev = np.std(ampdev)
+            srData['datasets'][i]['stim']['derivStd'] = std_dev
+
+    else:
+        raise ValueError("option must be 'default', 'by_stim' or 'all_trials' or 'per_trial'")
+    
+    
+
+def preprocess_srData(
+    srData,
+    plot=False,
+    respChunkLen=150,
+    segmentBuffer=25,
+    tdelta=0,
+    plotFlg = False,
+    seg_spec_lookup=None,
+    smWindow=31,
+    smooth_ampdev=False,
+    derivthresh_option=None,
+
+    ):
+    """ Preprocesses stimulus-response data by segmenting the stimulus based on its envelope, calculating the spectrogram,
     PSTH (Peri-Stimulus Time Histogram), and MPS (Modulation Power Spectrum).
-    Parameters:
-    srData (dict): Dictionary containing stimulus-response data.
-    plot (bool, optional): If True, plots the results. Default is False.
-    respChunkLen (int, optional): Total chunk length (including segment buffer) in number of points. Default is 150.
-    segmentBuffer (int, optional): Number of points on each side of segment for response and MPS. Default is 25.
-    tdelta (int, optional): Time delta to offset the events. Default is 0.
-    seg_spec_lookup (dict, optional): Dictionary containing the spectrogram for each stimulus to be used for segmentation
-    smWindow (int, optional): Size of the smoothing window used to get a smoothed PSTH
-    Returns:
+    
+    1. computes the amplitude envelope from the spectrogram and its derivtive 
+    2. identifies event (sound onset/offset) by detecting peaks/troughs in the derivative of the envelope
+    3. extracts the spectrogram windows around the detected events.  
+    4. for events, compute logdowmsampled specs and MPS
+    5. psth smoothing
+    
+    Parameters
+    ----------
+    srData : dict
+        Dictionary containing stimulus-response data.  
+    plot : bool, optional
+        If True, plots the results. Default is False. 
+    respChunkLen : int, optional
+        Total chunk length (including segment buffer) in number of points (default is 150).
+    segmentBuffer : int, optional
+        Number of points on each side of segment for response and MPS (default is 25).
+    tdelta : int, optional
+        Time delta to offset the events. (default is 0).
+    plotFlg : bool, optional
+        If True, plots the results (default is False).
+    seg_spec_lookup : dict, optional
+        Dictionary containing the spectrogram for each stimulus to be used for segmentation
+        If None, uses spectrograms from srData (default is None).
+    smWindow : int, optional
+        Size of the smoothing window used to get a smoothed PSTH.  (default is 31).
+    smooth_ampdev : bool, optional
+        If True, smooths the amplitude derivative before peak detection (default is False).
+    derivthresh_option : str, optional
+        Method for computing the derivative threshold for event detection. 
+        Options are:
+        - "default": Uses a fixed threshold (0.5) for all trials. 
+            this should be for efferent copy audio only.
+        - "by_stim": Computes separate threshold for each unique stimulus
+            all trials within the stimulus hav the same threshold
+        - "all_trials": Computes a single threshold across all trials
+        - "per_trial": Computes separate threshold for each trial
+            each trial within the same stim may have different threshold.
+        (default is None).
+    
+    Returns
+    -------
     None: The function modifies the srData dictionary in place, adding preprocessed data to it.
+        added events 
     """
     # PREPROCESSING
     # - Segmentation of the stimulus based on the envelope
@@ -655,16 +881,21 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
     )  # The 31 ms (number of points) hanning window used to smooth the PSTH
     wHann = wHann / sum(wHann)
 
+
+    # compute ampenv, ampdev, and derivative threshold and save in srData
+    compute_amp_dev_threshold(
+        srData,
+        option=derivthresh_option,
+        wHann=wHann,
+        seg_spec_lookup=seg_spec_lookup,
+        use_smooth_ampdev=smooth_ampdev,
+        default_derivthresh=derivativeThresh,   #0.5
+    )
+
     pairCount = len(srData["datasets"])  # number of stim/response pairs
 
-    for iSet in range(pairCount):
-        events = dict(
-            {
-                "index": [],
-                "feature": [[]],
-            }
-        )
-
+    for iSet in tqdm(range(pairCount), total=pairCount):
+        
         # Stimulus wave file and amplitude enveloppe from spectrogram
         # waveFile = srData['datasets'][iSet]['stim']['rawFile']
         # fs , soundStim = wavfile.read(waveFile)
@@ -683,14 +914,16 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
         # set the y ticks to freq
         nFreqs = len(srData["datasets"][iSet]["stim"]["tfrep"]["f"])
 
-        ampenv = np.mean(seg_spectro, axis=0)
         ampfs = srData["datasets"][iSet]["stim"]["sampleRate"]
 
         # nSound = int((respChunkLen)*fs/ampfs)   # number of time points in sound chunks - should be the same for all stimulus-response pairs
 
-        ampenv = np.convolve(ampenv, wHann, mode="same")
-        ampdev = ampenv[1:] - ampenv[0:-1]
-
+        # read ampenv, ampdev, and threshold from events
+        events = srData["datasets"][iSet]["stim"]["events"]
+        ampenv = events['ampenv']
+        ampdev = events["ampdev"]
+        derivativeThresh = srData["datasets"][iSet]["stim"]["derivStd"]
+    
         # Find peaks and troughs
         peakInd, peakVals = find_peaks(
             ampdev, height=derivativeThresh, distance=minSound
@@ -873,7 +1106,7 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
     )
     mean_mps = np.mean(all_mps, axis=0)
     for iSet in range(pairCount):
-        srData["datasets"][iSet]["events"]["mps_windows"] = (
+        srData["datasets"][iSet]["events"]["zero_mean_mps_windows"] = (
             srData["datasets"][iSet]["events"]["mps_windows"] - mean_mps
         )
 
@@ -1020,8 +1253,22 @@ def generate_event_pca_feature(srData, event_types, feature, pca = None, npcs=20
 
 # fitting funcitons
 def fit_seg(
-    srData, nPoints, x_feature, y_feature = 'psth_smooth', y_R2feature = None, y_R2SingleTrialFeature = None, snrEst = 1.0, kernel = 'Kernel', basis_args = [], nD=2, pair_train_set=None, tol = np.array([0.2, 0.1, 0.05, 0.01, 0.005, 0.001, 0.0005, 0.0001, 0.00001, 0]),
-store_error = False):
+    srData,
+    nPoints,
+    x_feature,
+    y_feature='psth_smooth',
+    y_R2feature=None,
+    kernel='Kernel',
+    snrEst=None,
+    smWindow=31,
+    y_R2SingleTrialFeature = None,
+    basis_args=[],
+    nD=2,
+    pair_train_set=None,
+    tol=
+    np.array([0.2, 0.1, 0.05, 0.01, 0.005, 0.001, 0.0005, 0.0001, 0.00001, 0]),
+    store_error = False
+):
     """
     Fits a segmented model to the given data using ridge regresseion and leave one out cross-validation
     Parameters:
@@ -1058,7 +1305,18 @@ store_error = False):
         if x.ndim == 1:
             x = x[:, np.newaxis]
         nFeatures = x.shape[1]
-  
+    
+    # if snrEst is none or not a number, we will estimate the SNR from the data.
+    # we need this to estimate the 'single trial' R2 from all trials for comparison with single trial
+    if snrEst is None or not isinstance(snrEst, (int, float)):
+        snrEst, f, snrEstf, cumInfo, totWeight = preprocSound.estimate_SNR(
+            srData, smWindow=smWindow
+            )
+    print(
+        'The single trial SNR with smoothing at %.0f ms is %.4f' % (
+            smWindow, snrEst)
+        )
+
     # 1. Calculate the averages to zero out data
     all_x = []
     all_y = []
@@ -1163,6 +1421,7 @@ store_error = False):
             u[iS,:,:],s[iS,:],v[iS,:,:] = np.linalg.svd(Cxx[iS,:,:])
 
     R2CV = np.zeros(ranktol.shape[0])
+    R2ST = np.zeros(ranktol.shape[0])
 
     for it, tolval in enumerate(ranktol):
 
@@ -1170,6 +1429,10 @@ store_error = False):
         simple_sum_y =  0
         simple_sum_error = 0
         simple_sum_count = 0
+
+        # per stimulus
+        error_st_sum = 0
+        var_st_sum = 0
 
         for iS, iSet in enumerate(pair_train_set):
             
@@ -1235,6 +1498,24 @@ store_error = False):
             simple_sum_y +=  sum_y
             simple_sum_error += sum_error2
             simple_sum_count += sum_count
+            
+            # R2_st calculation. 
+            # not using yw here, only using time index (len of trial) ?
+            ntp = len(yr2)      # number of time points in stim/resp
+            ntrials = len(pair['resp']['trialDurations'])
+
+            yr2_mean = np.mean(yr2)     # time mean of this stimulus's averaged response
+
+            yvar_nt = np.sum((yr2 - yr2_mean) ** 2) / ntp    # response variance
+            error_nt = np.sum((ypred - yr2) ** 2) / ntp
+            nvar_nt = yvar_nt / (snrEst + 1/ntrials)     # noise variance from SNR
+            
+            yvar_st = yvar_nt + nvar_nt * (1 - 1/ntrials)
+            error_st = error_nt + nvar_nt * (1 - 1/ntrials)
+            r2_st = 1.0 - error_st / yvar_st
+            # print(r2_st)
+            var_st_sum += yvar_st * ntrials         # weighted by number of trials per stimulus
+            error_st_sum += error_st * ntrials
         
 
         y_mean = simple_sum_y/simple_sum_count
@@ -1243,12 +1524,17 @@ store_error = False):
 
         # This is not a "one-trial" CV
         R2CV[it] = 1.0 - y_error/y_var
+        
+        # single trial
+        R2ST[it] = 1.0 - error_st_sum / var_st_sum
      
     # Find the best tolerance level, i.e. the ridge penalty hyper-parameter
     segModel = {}
     itMax = np.argmax(R2CV)
     segModel['Tol'] = tol
     segModel['R2CV'] = R2CV
+    segModel['R2ST'] = R2ST
+
     if ( (itMax == 0) | (itMax == len(tol)-1 )):
         print('fit_seg() warning: Max prediction found for %f. Extend range of tolerance values' % tol[itMax])
 
@@ -1284,6 +1570,309 @@ store_error = False):
     # 6. Return segmented model
     return segModel
 
+
+def fit_seg_st(
+    srData,
+    nPoints,
+    x_feature,
+    y_feature='psth_smooth',
+    y_R2feature=None, 
+    kernel='Kernel',
+    basis_args=[],
+    nD=2,
+    tol=np.array([0.2, 0.1, 0.05, 0.01, 0.005, 0.001, 0.0005, 0.0001, 0.00001, 0]),
+    store_error=False
+):
+
+    # === group trials by stimulus name ===
+    stim_names = [ds['stim']['rawFile'] for ds in srData['datasets']]
+    stim_trials = {}
+    for i, name in enumerate(stim_names):
+        if name not in stim_trials:
+            stim_trials[name] = []
+        # store in the dict for each rawFile (stimulus) name, 
+        # the indices in srData to locate trials with this stim.
+        stim_trials[name].append(i)
+    
+    unique_stims = list(stim_trials.keys())
+    nStims = len(unique_stims)          # number of unique stimuli
+    nSets = len(srData['datasets'])     # number of total trials
+    print(f"total {nStims} unique stimuli, {nSets} total trials.")
+    
+    # === set up cross-validation params ===
+    # for cross-validation we keep the leave one out approach
+    # one=stimulus
+
+    # === feature dimensionality ===
+    # Find the dimensionality of the x feature space.  For kernel it is just the number of points
+    # same as fit_seg.
+    if kernel in ['Kernel', 'Kernel2', 'Kernel0']:
+        nFeatures = nPoints
+    else:
+        pair = srData["datasets"][0]
+        x = pair["events"]["pca_%s" % x_feature]
+        if x.ndim == 1:
+            x = x[:, np.newaxis]
+        nFeatures = x.shape[1]
+
+    # === generate x, y, yw ===
+    # store these as dicts where key is index in srData
+    # different from fit_seg where this is tored as list.
+    all_x = {} 
+    all_y = {}
+    all_yw = {}
+    
+    # sum at trial level (nSets)
+    xsum = np.zeros((nSets, nD * nFeatures, 1))
+    ysum = np.zeros(nSets)
+    count = np.zeros(nSets)
+    for iSet, pair in enumerate(srData['datasets']):
+        x = generate_x(
+            pair, x_feature,
+            basis_args=basis_args, xGen=kernel,
+            nPoints=nPoints, nLaguerre=nD
+        )
+        y = pair['resp'][y_feature]
+        if 'weights' not in pair['resp']:
+            yw = np.ones_like(y)
+        else:
+            yw = pair['resp']['weights'][0:len(y)]
+        
+        # eliminate entries with zero weight
+        x = x[:, 0:len(y)]
+        x = x[:, yw > 0]
+        y = y[yw > 0]
+        yw = yw[yw > 0]
+        all_x[iSet] = x
+        all_y[iSet] = y
+        all_yw[iSet] = yw
+        
+        # = compute weighted sums per trial =
+        xsum[iSet, :, :] = np.sum(x * yw.T, axis=1, keepdims=True)
+        ysum[iSet] = np.sum(y * yw)
+        count[iSet] = np.sum(yw)
+        
+    # = compute sums per stimulus =
+    # each stimulus gets the sum of its trials' sum in xsum/ysum
+    # equivalent to fit_seg's pair dataset xavg/yavg ...?
+    xsum_stim = np.zeros((nStims, nD * nFeatures, 1))
+    ysum_stim = np.zeros(nStims)
+    count_stim = np.zeros(nStims)
+    
+     #loop through all unique stim
+    for iStim, stim_name in enumerate(unique_stims):
+        # loop through all trials for one stim
+        for iSet in stim_trials[stim_name]:
+            xsum_stim[iStim, :, :] += xsum[iSet, :, :]
+            ysum_stim[iStim] += ysum[iSet]
+            count_stim[iStim] += count[iSet]
+    
+    # === (2) calculate the leave-one-out average X and average Y
+    print("  compute LOO X and Y...")
+    xsumAll = np.sum(xsum_stim, axis=0)
+    ysumAll = np.sum(ysum_stim)
+    countAll = np.sum(count_stim)
+    
+    # global average
+    xavg = xsumAll / countAll
+    yavg = ysumAll / countAll
+    
+    # LOO average
+    xavg_loo = np.zeros((nStims, nD * nFeatures, 1))
+    yavg_loo = np.zeros(nStims)
+    for iStim in range(nStims):
+        xavg_loo[iStim, :, :] = np.divide(
+            xsumAll - xsum_stim[iStim, :, :],
+            countAll - count_stim[iStim]
+        )
+        yavg_loo[iStim] = np.divide(
+            
+            ysumAll - ysum_stim[iStim],
+            countAll - count_stim[iStim]
+        )
+    
+    # === (3) LOO Cxx and Cxy and Cxx norm
+    print("  compute Cxx and Cxy and Cxx norm...")
+    Cxx_stim = np.zeros((nStims, nD * nFeatures, nD*nFeatures))     # stimulus levfel
+    Cxy_stim = np.zeros((nStims, nD * nFeatures))
+
+    for iStim, stim_name in enumerate(unique_stims):
+        for iSet in stim_trials[stim_name]:
+            x,y,yw = all_x[iSet], all_y[iSet], all_yw[iSet]
+            x = np.squeeze(x)
+            xc = x - xavg_loo[iStim]
+            yc = y - yavg_loo[iStim]
+            Cxx_stim[iStim, :, :] += (xc * np.sqrt(yw).T) @ (xc * np.sqrt(yw).T).T
+            Cxy_stim[iStim, :] += xc @ (yc * yw)
+
+    CxxSum = np.sum(Cxx_stim, axis=0)
+    CxySum = np.sum(Cxy_stim, axis=0)
+    CxxNorm = np.zeros(nStims)
+    
+    # LOO:
+    Cxx_loo = np.zeros(Cxx_stim.shape)
+    Cxy_loo = np.zeros(Cxy_stim.shape)
+    for iStim in range(nStims):
+        Cxx_loo[iStim, :, :] = np.divide(
+            CxxSum - Cxx_stim[iStim, :, :],
+            countAll - count_stim[iStim]
+        )
+        Cxy_loo[iStim, :] = np.divide(
+            CxySum - Cxy_stim[iStim, :],
+            countAll - count_stim[iStim]
+        )
+        if kernel in ['Kernel', 'Kernel2']:
+            CxxNorm[iStim] = np.linalg.norm(
+                Cxx_loo[iStim, :, :] - np.diag(np.diag(Cxx_loo[iStim, :, :]))
+            )
+        else:
+            CxxNorm[iStim] = np.linalg.norm(Cxx_loo[iStim, :, : ])
+    
+    ranktol = tol * np.max(CxxNorm)
+    
+
+    
+    # === ridge regression ===
+    # = (4a) invert all auto-correlation mats =
+    print("  invert all auto-correlation mats...")
+    u = np.zeros((nStims, nD * nFeatures, nD * nFeatures))
+    v = np.zeros(u.shape)
+    s = np.zeros((nStims, nD * nFeatures))
+    if kernel == 'Kernel':
+        for iStim in range(nStims):
+            diagCxx = np.diag(np.diag(Cxx_loo[iStim, :, :]))
+            u[iStim, :, : ], s[iStim, :], v[iStim, :, :] = np.linalg.svd(
+                Cxx_loo[iStim, :, :] - diagCxx
+            )
+    else:
+        for iStim in range(nStims):
+            u[iStim, :, : ], s[iStim, :], v[iStim, :, :] = np.linalg.svd(
+                Cxx_loo[iStim, :, :]
+            )
+    
+    # = evaluate tol =
+    R2CV = np.zeros(len(tol))
+    
+    for it, tolval in enumerate(ranktol):
+        print(f"  evaluate tol={tolval}...")
+        simple_sum_yy = 0
+        simple_sum_y = 0
+        simple_sum_error = 0
+        simple_sum_count = 0
+        
+        for iStim, stim_name in tqdm(enumerate(unique_stims), total=nStims):
+            
+            # compute the solution using the Cxx with the curret stim left out
+            if kernel == 'Kernel':
+                diagCxx = np.diag(np.diag(Cxx_loo[iStim, :, : ]))
+                Cxx_inv = nearDiagInv_optim(
+                    diagCxx,
+                    u[iStim, :, :],
+                    s[iStim, :],
+                    v[iStim, :, :],
+                    tol=tolval
+                )
+                hJN = Cxx_inv @ Cxy_loo[iStim, : ]
+            elif kernel == 'Kernel2':
+                diagCxx = np.diag(np.diag(Cxx_loo[iStim, :, : ]))
+                Cxx_inv = nearDiagInv2(
+                    Cxx_loo[iStim,:,:],
+                    diagCxx,
+                    tol=tolval
+                )
+                hJN = Cxx_inv @ Cxy_loo[iStim, : ]
+            else:
+                is_mat = np.zeros((nD * nFeatures, nD * nFeatures))
+                for ii in range(nD * nFeatures):
+                    is_mat[ii,ii] = 1.0 / (s[iStim, ii] + tolval)
+                # hJN = v[iStim,:,:].T @ is_mat @ (u[iStim, :,:].T @ Cxy_loo[iStim, :])
+                hJN = u[iStim,:,:] @ is_mat @ (v[iStim,:,:] @ Cxy_loo[iStim, :])
+
+            # use this solution to test on all trials of the held-out stimulus
+            for iSet in stim_trials[stim_name]:
+                pair = srData['datasets'][iSet]
+                # get the trial info
+                x,y,yw = all_x[iSet], all_y[iSet], all_yw[iSet]
+                
+                # get the prediction
+                ypred = hJN @ (x - xavg_loo[iStim]) + yavg_loo[iStim]
+
+                # store error if needed
+                if store_error:
+                    pair['resp']['error_%s' % kernel] = y - ypred
+                    
+                if y_R2feature is None:
+                    yr2 = y
+                else:
+                    yr2 = pair['resp'][y_R2feature][:len(y)]
+                    yr2 = yr2[yw > 0]
+                    ypred += (yr2 - y)
+                
+                # set negative predicted firing rate to zero
+                # flag?
+                ypred[ypred < 0] = 0
+                
+                simple_sum_count += np.sum(yw)
+                simple_sum_y += np.sum(yr2 * yw)
+                simple_sum_yy += np.sum(yr2 * yr2 * yw)
+                simple_sum_error += np.sum(((ypred - yr2)**2) * yw)
+        
+        y_mean = simple_sum_y / simple_sum_count
+        y_var = simple_sum_yy / simple_sum_count - y_mean**2
+        y_error = simple_sum_error / simple_sum_count
+        R2CV[it] = 1.0 - y_error / y_var
+
+                
+    # === find best tolerance ===
+    itMax = np.argmax(R2CV)
+    if (itMax==0) or (itMax==len(tol)-1):
+        print('fit_seg() warning: Max prediction found for %f. Extend range of tolerance values' % tol[itMax])
+        print(f'fit_seg_st() warning: Max R2CV at boundary ranktol={ranktol[itMax]:.6f} (tol={tol[itMax]:.6f}). Extend range of tolerance values.')
+
+    # === fit final model on all data ===
+    CxxAll = CxxSum / countAll
+    CxyAll = CxySum / countAll
+    
+    if kernel == 'Kernel':
+        diagCxx = np.diag(np.diag(CxxAll))
+        uAll, sAll, vAll = np.linalg.svd(CxxAll - diagCxx)
+        CxxAll_inv = nearDiagInv_optim(
+            diagCxx,
+            uAll,
+            sAll,
+            vAll, 
+            tol=ranktol[itMax]
+        )
+        hJNAll = CxxAll_inv @ CxyAll
+    elif kernel == 'Kernel2':
+        diagCxx = np.diag(np.diag(CxxAll))
+        CxxAll_inv = nearDiagInv2(
+            CxxAll,
+            diagCxx,
+            tol=ranktol[itMax]
+        )
+        hJNAll = CxxAll_inv @ CxyAll
+    else:
+        uAll, sAll, vAll = np.linalg.svd(CxxAll)
+        for ii in range(nD * nFeatures):
+            is_mat[ii,ii] = 1.0 / (sAll[ii] + ranktol[itMax])
+        # hJNAll = vAll.T @ is_mat @ (uAll.T @ CxyAll)
+        hJNAll = uAll @ is_mat @ (vAll @ CxyAll)
+    
+    b0 = -hJNAll @ (xsumAll/countAll) + (ysumAll/countAll)
+    
+    segModel = {
+        "weights": hJNAll,
+        "b0": b0,
+        "yavg": ysumAll/countAll,
+        "xavg": xsumAll/countAll,
+        "Cxy": CxyAll,
+        "Cxx": CxxAll,
+        "best_tol": tol[itMax],
+        'R2CV': R2CV
+    }
+    
+    return segModel
    
 
 def fit_seg_segId_model(
