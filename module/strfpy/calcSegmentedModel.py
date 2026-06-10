@@ -1785,7 +1785,8 @@ def fit_seg_st(
                 is_mat = np.zeros((nD * nFeatures, nD * nFeatures))
                 for ii in range(nD * nFeatures):
                     is_mat[ii,ii] = 1.0 / (s[iStim, ii] + tolval)
-                hJN = v[iStim,:,:].T @ is_mat @ (u[iStim, :,:].T @ Cxy_loo[iStim, :])
+                # hJN = v[iStim,:,:].T @ is_mat @ (u[iStim, :,:].T @ Cxy_loo[iStim, :])
+                hJN = u[iStim,:,:] @ is_mat @ (v[iStim,:,:] @ Cxy_loo[iStim, :])
 
             # use this solution to test on all trials of the held-out stimulus
             for iSet in stim_trials[stim_name]:
@@ -1855,7 +1856,8 @@ def fit_seg_st(
         uAll, sAll, vAll = np.linalg.svd(CxxAll)
         for ii in range(nD * nFeatures):
             is_mat[ii,ii] = 1.0 / (sAll[ii] + ranktol[itMax])
-        hJNAll = vAll.T @ is_mat @ (uAll.T @ CxyAll)
+        # hJNAll = vAll.T @ is_mat @ (uAll.T @ CxyAll)
+        hJNAll = uAll @ is_mat @ (vAll @ CxyAll)
     
     b0 = -hJNAll @ (xsumAll/countAll) + (ysumAll/countAll)
     
