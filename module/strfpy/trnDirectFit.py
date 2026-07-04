@@ -31,7 +31,7 @@ def trnDirectFit(modelParams, globalDat):
     modelParams.setdefault('Tol_val', [0.1, 0.05, 0.01, 0.005, 1e-3, 5e-4, 1e-4, 5e-5])
     modelParams.setdefault('sparsenesses', [0, 1, 2, 6])
     modelParams.setdefault('timevary_PSTH', 0)
-    modelParams.setdefault('smooth_rt', 41)
+    modelParams.setdefault('smooth_rt', 31)
     modelParams.setdefault('infoFreqCutoff', 100)
     modelParams.setdefault('infoWindowSize', 0.500)
     modelParams.setdefault('TimeLagUnit', 'frame')
@@ -138,7 +138,8 @@ def trnDirectFit(modelParams, globalDat):
 
                 # Also calculate an R2
                 # Get values to calculate R2-CV - here it is the coefficient of determination
-                yw = df_Check_And_Load(DS[p]['weightfiles'])   # the index is either p or srRange...  I need to figure this out
+                # yw = df_Check_And_Load(DS[p]['weightfiles'])  
+                yw = globalDat['weight'][srRange]   
                 y = np.convolve(rresp, wHann, mode="same")
                 sum_count = np.sum(yw)
                 sum_y = np.sum(y*yw)
@@ -159,7 +160,7 @@ def trnDirectFit(modelParams, globalDat):
             y_var = simple_sum_yy/simple_sum_count - y_mean**2    
             y_error = simple_sum_error/simple_sum_count
 
-            # This is a "one-trial" CV
+            # This is the R2 for the variable number of trials.
             R2CV[k,q] = 1.0 - y_error/y_var
 
             print(f"Tolerance={modelParams['Tol_val'][k]}, Sparseness={spvals[q]}, Avg. Prediction Info={avgInfo}, R2CV={R2CV[k,q]}")
