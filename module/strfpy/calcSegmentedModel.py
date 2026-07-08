@@ -808,7 +808,7 @@ def preprocess_srData(
     smooth_ampdev=False,
     derivthresh_option=None,
 
-    ):
+    , derivativeThresh=0.5):
     """ Preprocesses stimulus-response data by segmenting the stimulus based on its envelope, calculating the spectrogram,
     PSTH (Peri-Stimulus Time Histogram), and MPS (Modulation Power Spectrum).
     
@@ -837,6 +837,7 @@ def preprocess_srData(
         If None, uses spectrograms from srData (default is None).
     smWindow : int, optional
         Size of the smoothing window used to get a smoothed PSTH.  (default is 31).
+    derivativeThresh (float, optional): Threshold derivative in dB per ms for segmentation. Default is 0.5.
     smooth_ampdev : bool, optional
         If True, smooths the amplitude derivative before peak detection (default is False).
     derivthresh_option : str, optional
@@ -866,7 +867,7 @@ def preprocess_srData(
     # ampThresh = 20.0  # Threshold in dB where 50 is max
 
     minSound = 25  # Minimum distance between peaks or troffs
-    derivativeThresh = 0.5  # Threshold derivative 0.5 dB per ms.
+    # derivativeThresh = 0.5  # Threshold derivative 0.5 dB per ms.
     # segmentBuffer = 30 # Number of points on each side of segment for response and MPS - time units given by stim sample rate
     # respChunkLen = 150 # Total chunk length (including segment buffer) in number of points
     # DBNOISE = 50  # Set a baseline for everything below 50 dB from max - done in preprocSound
@@ -1288,6 +1289,8 @@ def fit_seg(
         segMpdel: The ridge regression model for segmentation/identification - currently a dictionary. To be maade into a class
     """
 
+    # Checking if truncation of data is creating issues
+    truncate_zero_weight = False
 
     # If a training subset is not defined use the entire data set
     if pair_train_set is None:
@@ -1336,13 +1339,14 @@ def fit_seg(
         if "weights" not in pair["resp"]:
             yw = np.ones_like(y)
         else:
-            yw = pair["resp"]["weights"][0:len(y)]   # The processed fatures might be shorter
+            yw = pair["resp"]["weights"][0:len(y)]   # The processed fatures might be shorter (why?) 
 
         # Eliminate entres with zero weight - this is not needed but should make smaller x and y
-        x = x[:, 0:len(y)]
-        x = x[:, yw> 0]
-        y = y[yw > 0]
-        yw = yw[yw > 0]
+        if (truncate_zero_weight):
+            x = x[:, 0:len(y)]
+            x = x[:, yw> 0]
+            y = y[yw > 0]
+            yw = yw[yw > 0]
 
         all_x.append(x)
         all_y.append(y)
@@ -1482,7 +1486,8 @@ def fit_seg(
                 yr2 = y
             else:
                 yr2 = pair['resp'][y_R2feature][0:len(y)]
-                yr2 = yr2[yw>0]
+                if truncate_zero_weight:
+                    yr2 = yr2[yw>0]
                 ypred += (yr2 - y)
 
             # Rectify - this should be a flag
@@ -2382,8 +2387,17 @@ def process_unit_strf(nwb_file, unit_name, model_dir=None, trials_type='playback
     preprocess_srData(srData, plot=False, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = False)
 
     # Estimate the single trial SNR for this data set
-    snr, *_ = preprocSound.estimate_SNR(srData)
-    evOne= snr/(snr + 1)     # The expected variance (R2-ceiling) for one trial
+    snrEst, *_ = preprocSound.estimate_SNR(srData)
+    evOne= snrEst/(snrEst + 1)     # The expected variance (R2-ceiling) for one trial
+
+    r2num = 0
+    r2den = 0
+    for pair in srData["datasets"]:
+        yw = pair["resp"]["weights"]
+        r2num += np.sum(snrEst*yw)
+        r2den += np.sum(1+snrEst*yw)
+
+    EV = r2num/r2den
 
     # The Classic STRF
 
@@ -2436,7 +2450,7 @@ def process_unit_strf(nwb_file, unit_name, model_dir=None, trials_type='playback
     result = {
         'nwb_file_identifier': identifier,
         'unit' : unit_name,
-        'r2Ceil' : evOne,
+        'r2Ceil' : EV,
         'r2STRF' : r2STRF
     }
     
@@ -2467,7 +2481,7 @@ def process_unit(nwb_file, unit_name, model_dir=None, trials_type='playback_tria
 
     # Calculate spectrogram, smooth psth and make a new object the stimulus-response Data: srData
     srData = preprocSound.preprocess_sound_nwb(nwb_file, trials_type, unit_name, preprocess_type='ft')
-    preprocess_srData(srData, plot=False, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = False)
+    preprocess_srData(srData, plot=False, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = False, derivativeThresh=0.3)
 
     # Estimate the single trial SNR for this data set
     snrEst, f, snrEstf, cumInfo, totWeight  = preprocSound.estimate_SNR(srData)
@@ -2605,11 +2619,19 @@ def process_unit_nostrf(nwb_file, unit_name, model_dir=None, trials_type='playba
 
     # Calculate spectrogram, smooth psth and make a new object the stimulus-response Data: srData
     srData = preprocSound.preprocess_sound_nwb(nwb_file, trials_type, unit_name, preprocess_type='ft')
-    preprocess_srData(srData, plot=False, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = False)
+    preprocess_srData(srData, plot=False, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = False, derivativeThresh=0.3)
 
     # Estimate the single trial SNR for this data set
-    snr, *_ = preprocSound.estimate_SNR(srData)
-    evOne= snr/(snr + 1)     # The expected variance (R2-ceiling) for one trial
+    snrEst, *_ = preprocSound.estimate_SNR(srData)
+    evOne= snrEst/(snrEst + 1)     # The expected variance (R2-ceiling) for one trial
+    r2num = 0
+    r2den = 0
+    for pair in srData["datasets"]:
+        yw = pair["resp"]["weights"]
+        r2num += np.sum(snrEst*yw)
+        r2den += np.sum(1+snrEst*yw)
+
+    EV = r2num/r2den
 
     # Fit the segmentation (on-off here) kernel (impulse response)
     segModel = fit_seg(srData, nPoints, x_feature = event_types, y_feature = 'psth_smooth', kernel = 'Kernel', nD=2, tol=np.array([0.1, 0.01, 0.001, 0.0001, 0.00001, 0]), store_error = True  )
@@ -2665,7 +2687,7 @@ def process_unit_nostrf(nwb_file, unit_name, model_dir=None, trials_type='playba
     result = {
         'nwb_file_identifier': identifier,
         'unit' : unit_name,
-        'r2Ceil' : evOne,
+        'r2Ceil' : EV,
         'r2segModel' : r2segModel,
         'Laguerre_args' :  laguerre_args,
         'dogs_args' : DOGS_args,
