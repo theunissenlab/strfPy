@@ -808,7 +808,7 @@ def preprocess_srData(
     smooth_ampdev=False,
     derivthresh_option=None,
 
-    , derivativeThresh=0.5):
+    derivativeThresh=0.5):
     """ Preprocesses stimulus-response data by segmenting the stimulus based on its envelope, calculating the spectrogram,
     PSTH (Peri-Stimulus Time Histogram), and MPS (Modulation Power Spectrum).
     
