@@ -6,6 +6,7 @@ from scipy.signal import convolve, windows
 from scipy.signal import coherence, welch
 import pandas as pd
 import pynwb as nwb
+from tqdm import tqdm
 
 from .timeFreq import timefreq, timefreq_raw
 def find_long_zero_segments(arr, min_length=10):
@@ -312,13 +313,23 @@ def balance_trials(trials: pd.DataFrame,
     balanced_trials = balanced_trials.reset_index(level=list(range(len(grouping))), drop=True)
     
     return balanced_trials
+
+
 def get_mic_data(nwb, trial, ch=1):
+    """
+    get microphone data.
+    
+    mic_data[:,1] is actual mic trial data.  
+    mic_data[:,0] is a copy of stim.  
+    
+    returns mic_trial, mic_copy
+    """
     rate = nwb.acquisition['audio'].rate
     mic_data = nwb.acquisition['audio'].data
     start_id = int(trial.start_time * rate)
     end_id = int(trial.stop_time * rate)
     mic_trial = mic_data[start_id:end_id]
-    return mic_trial[:,1]
+    return mic_trial[:,1], mic_trial[:, 0]
 
 def generate_srData_nwb_single_trials(nwb, intervals_name, unit_id, balanceFlg = True):
     # params
@@ -335,14 +346,18 @@ def generate_srData_nwb_single_trials(nwb, intervals_name, unit_id, balanceFlg =
     unit_valid_intervals = all_valid_intervals[all_valid_intervals['unit_id'] == unit_id]
 
     # remove trials that are not in valid intervals
-    valid_trials = all_trials.apply(lambda x: any((unit_valid_intervals.start_time < x.start_time) & (unit_valid_intervals.stop_time > x.stop_time)), axis=1)
+    valid_trials = all_trials.apply(
+        lambda x: any(
+            (unit_valid_intervals.start_time < x.start_time) & 
+            (unit_valid_intervals.stop_time > x.stop_time)
+            ), axis=1)
     all_trials = all_trials[valid_trials]
 
     # lets balance the trials by stimuli name
     if balanceFlg:
         all_trials = balance_trials(all_trials, ['stimuli_name'])
     
-
+    print(f"unit {unit_id}: {len(all_trials)} valid trials")
     # lets get the precomputed spectrograms
     spectrograms = nwb.processing['stimuli_spectrograms']
 
@@ -354,12 +369,13 @@ def generate_srData_nwb_single_trials(nwb, intervals_name, unit_id, balanceFlg =
     max_stim_amp = 0.0
     max_resp_len = -1     # Stimulus-response length is number of points
     n_stim_channels = -1
-    for ix, row in all_trials.iterrows():
+
+    for ix, row in tqdm(all_trials.iterrows(), total=len(all_trials)):
         stim_name = row['stimuli_name']
         ds = {}
         wav_file_name = stim_name #raw_stim_files[k]
         audio_rate = nwb.acquisition['audio'].rate
-        stim_data = get_mic_data(nwb, row)
+        stim_data, _ = get_mic_data(nwb, row)
         stim_fs = audio_rate
         stim_params=dict()
         stim_params['fband'] = 120
@@ -425,12 +441,16 @@ def generate_srData_nwb_single_trials(nwb, intervals_name, unit_id, balanceFlg =
 
     # Threshold spectrogram - this should probably be elsewhere or at least consistent with log
     for k in range(len(datasets)):
-        spec = datasets[k]['stim']['tfrep']['spec']
-        spec = spec - max_stim_amp + DBNOISE
-        spec[spec<0] = 0.0
-        datasets[k]['stim']['tfrep']['spec'] = spec
+        original_spec = datasets[k]['stim']['tfrep']['spec'].copy()
+        
+        # Threshold spec: shifted relative to max amplitude across all stimuli
+        # max_stim_amp is the same for all trials!
+        thres_spec = original_spec - max_stim_amp + DBNOISE
+        thres_spec[thres_spec < 0] = 0.0
 
-    
+        # datasets[k]['stim']['tfrep']['original_spec'] = original_spec
+        datasets[k]['stim']['tfrep']['spec'] = thres_spec
+        assert np.max(thres_spec) <= DBNOISE, "the max after thresholding is still larger than DBNOISE!"
     
     # set dataset-wide values
     srData = {
@@ -637,7 +657,36 @@ def calc_psth(spike_times,  psth_dur_s, t_start_s=0, bin_size=1, durations=None,
         psth = np.convolve(psth, wHann, mode='same')
     return np.arange(nbins)*bin_size/1000 + t_start_s, psth * 1000 / bin_size
 
-def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft', stim_params={}, stim_loader=None, pb_fix=None, ignore_intervals=False):
+def preprocess_sound_nwb(
+    nwb_file,
+    intervals_name,
+    unit_id,
+    preprocess_type='ft',
+    stim_params={},
+    stim_type="stimulus",
+    mode="average",
+    stim_loader=None,
+    pb_fix=None,
+    ignore_intervals=False
+):
+    """ 
+    stim_type (str): 'stimulus' or 'efferent'. 
+        if 'stimulus', we will load the stimulus from nwbfile.stimulus[stim_name]
+        if 'efferent', we will load the efferent signal in nwb.acquisition['audio'].
+    """
+    # check if mode is valid
+    if mode not in ['average', 'single_trial']:
+        raise ValueError(f"Invalid mode: {mode}. Must be 'average' or 'single_trial'.")
+
+    valid_stim_types = {
+    'average':      ('stimulus', 'efferent'),
+    'single_trial': ('mic',),
+    }
+
+    if stim_type not in valid_stim_types[mode]:
+        raise ValueError(f"stim_type={stim_type!r} is not valid for mode={mode!r}. "
+                        f"Must be one of {valid_stim_types[mode]}")
+
     # check if nwb_file is a path
     if isinstance(nwb_file, nwb.NWBFile):
         nwbfile = nwb_file
@@ -652,16 +701,21 @@ def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft'
     # get intervals and spike times from database
     all_trials = nwbfile.intervals[intervals_name].to_dataframe()
     unit_spike_times = nwbfile.units[unit_id].spike_times.values[0]
-    print(nwbfile.units[unit_id])
+    print(f"unit: {nwbfile.units[unit_id]}")
+
     # get unit valid intervals
     all_valid_intervals = nwbfile.intervals['unit_intervals'].to_dataframe()
     unit_valid_intervals = all_valid_intervals[all_valid_intervals['unit_id'] == unit_id]
 
     # remove trials that are not in valid intervals
-    valid_trials = all_trials.apply(lambda x: any((unit_valid_intervals.start_time < x.start_time) & (unit_valid_intervals.stop_time > x.stop_time)), axis=1)
+    valid_trials = all_trials.apply(
+        lambda x: any(
+            (unit_valid_intervals.start_time < x.start_time) & 
+            (unit_valid_intervals.stop_time > x.stop_time)
+            ), axis=1)
     all_trials = all_trials[valid_trials]
+
     if len(all_trials) == 0:
-        print(f"No valid trials found for unit {unit_id} in intervals {intervals_name}.")
         raise ValueError(f"No valid trials found for unit {unit_id} in intervals {intervals_name}.")
         return -1
     # lets balance the trials by stimuli name
@@ -669,20 +723,69 @@ def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft'
     # # if 'response' in all_trials.columns:
     # #     all_trials = all_trials[all_trials['response'] == False]
 
+    # create kwargs for trial-averaged or single-trial 
+    kwargs = dict(
+        nwbfile=nwbfile,
+        unit_spike_times=unit_spike_times,
+        preprocess_type=preprocess_type,
+        stim_params=stim_params,
+        stim_type=stim_type,
+        DBNOISE=DBNOISE,
+        stim_sample_rate=stim_sample_rate,
+        resp_sample_rate=resp_sample_rate,
+    )
+    
+    if mode == 'average':
+        groups = all_trials.groupby('stimuli_name')
+    elif mode == 'single_trial':
+        groups = list(all_trials.groupby(level=0))   # group by index, one row each
+
     # now we have all the spike times aligned to the stimulus onset for all stimuli
     # now we group them by stimulus and preprocess them
+    srData = _generate_srdata(groups=groups, **kwargs)
+
+    return srData
+
+def _generate_srdata(
+    groups,
+    nwbfile,
+    unit_spike_times,
+    preprocess_type,
+    stim_params,
+    stim_type,
+    DBNOISE,
+    stim_sample_rate,
+    resp_sample_rate,
+):
+    
     srData = {}
+
     datasets = []
     max_stim_amp = -999
     max_resp_len = -1     # Stimulus-response length is number of points
     n_stim_channels = -1
-    for stim_name, stim_df in all_trials.groupby('stimuli_name'):
+    
+    for stim_name, stim_df in tqdm(groups):
         ds = {}
         # preprocess the stimuli by loading the wav and generating the tfrep
         wav_file_name = stim_name #raw_stim_files[k]
-        stim_data = nwbfile.stimulus[stim_name].data[:]
+        if stim_type == "stimulus":
+            stim_data = nwbfile.stimulus[stim_name].data[:]
+            stim_fs = nwbfile.stimulus[stim_name].rate
+        elif stim_type == "efferent":
+            # get the first trial for this stimulus and load the efferent copy
+            # print(len(stim_df))
+            stim_data = get_mic_data(nwbfile, stim_df.iloc[0])[1]
+            stim_fs = nwbfile.acquisition['audio'].rate
+        elif stim_type == "mic":
+            assert len(stim_df) == 1, f"mic stim_type expects a single trial, got {len(stim_df)}"
+            stim_data = get_mic_data(nwbfile, stim_df)[0]
+            stim_fs = nwbfile.acquisition['audio'].rate
+        else:
+            raise ValueError(f"Invalid stim_type: {stim_type}. Must be 'stimulus' or 'efferent'.")
+        
         zero_segs = find_long_zero_segments(stim_data, min_length=10)
-        stim_fs = nwbfile.stimulus[stim_name].rate
+
         stim_params['fband'] = 120
         stim_params['nstd'] = 6
         stim_params['high_freq'] = 8000
@@ -690,6 +793,7 @@ def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft'
         stim_params['log'] = 1
         stim_params['stim_rate'] = stim_sample_rate
         tfrep = timefreq_raw(stim_data,stim_fs, preprocess_type, stim_params)
+    
         stim = {
             'type': 'tfrep',
             'rawFile': stim_name,
@@ -704,9 +808,8 @@ def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft'
 
         if (n_stim_channels == -1 ):
             n_stim_channels = stim['nStimChannels']
-        else:
-            if (n_stim_channels != stim['nStimChannels']):
-                print('Error: number of spatial (frequency) channels does not match across stimuli')
+        elif (n_stim_channels != stim['nStimChannels']):
+            print('Error: number of spatial (frequency) channels does not match across stimuli')
 
         if max_stim_amp == -999:
             max_stim_amp = stim['maxStimAmp']
@@ -723,7 +826,11 @@ def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft'
 
         spike_idx_start = np.searchsorted(unit_spike_times, trial_starts)
         spike_idx_stop = np.searchsorted(unit_spike_times, trial_stops)
-        spike_times = [unit_spike_times[spike_idx_start[i]:spike_idx_stop[i]] - trial_starts[i] for i in range(len(trial_starts))]
+        spike_times = [
+            unit_spike_times[spike_idx_start[i]:spike_idx_stop[i]] - trial_starts[i] 
+            for i in range(len(trial_starts))
+        ]
+
         stim_len_samples = int(np.round(stim['stimLength']*1000))  # Stimulus length in ms
         bin_size = 1000.0/resp_sample_rate
         nbins = int(stim_len_samples // bin_size)
@@ -765,15 +872,30 @@ def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft'
         max_resp_len = np.max((max_resp_len, len(resp['psth'])))
         datasets.append(ds)
     # end loop over stimuli
-
+    
     # Threshold spectrogram - this should probably be elsewhere or at least consistent with log
     for k in range(len(datasets)):
-        spec = datasets[k]['stim']['tfrep']['spec']
-        spec = spec - max_stim_amp + DBNOISE
-        spec[spec<0] = 0.0
-        datasets[k]['stim']['tfrep']['spec'] = spec
+        original_spec = datasets[k]['stim']['tfrep']['spec'].copy()
+        
+        # Threshold spec: shifted relative to max stimulus amplitude
+        thres_spec = original_spec - max_stim_amp + DBNOISE
+        thres_spec[thres_spec < 0] = 0.0
+        
+        # another spec that is shifted by a fixed amount that 
+        # respects the dynamic range of the spectrogram 
+        # but is thresholded to remove low values 
+        # fixed shift should not use maxstimap
+        fixed_shift = 10.0
+        fixed_thres_spec = original_spec + fixed_shift
+        fixed_thres_spec[fixed_thres_spec < 0] = 0.0
+        
+        datasets[k]['stim']['tfrep']['originalspec'] = original_spec
+        datasets[k]['stim']['tfrep']['thres_spec'] = thres_spec
+        datasets[k]['stim']['tfrep']['fixed_thres_spec'] = fixed_thres_spec
+        
+        # @TODO: save as 'spec' from arg
+        datasets[k]['stim']['tfrep']['spec'] = thres_spec
 
-    
     
     # set dataset-wide values
     srData = {
