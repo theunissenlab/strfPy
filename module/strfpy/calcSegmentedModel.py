@@ -868,14 +868,18 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
 
 
     # lets generate zero-mean mps
-    all_mps = np.concatenate(
-        [
-            srData["datasets"][iSet]["events"]["mps_windows"]
-            for iSet in range(pairCount)
-        ],
-        axis=0,
-    )
-    mean_mps = np.mean(all_mps, axis=0)
+    # Streamed running sum instead of concatenating every event's MPS window
+    # across the whole corpus just to take one mean -- avoids ever holding a
+    # full (total_events x nfreq x ntime) array. Accumulate in float64 since
+    # the per-event windows are float32 and there can be many of them summed.
+    mps_sum = None
+    mps_count = 0
+    for iSet in range(pairCount):
+        mps_windows = srData["datasets"][iSet]["events"]["mps_windows"]
+        set_sum = mps_windows.sum(axis=0, dtype=np.float64)
+        mps_sum = set_sum if mps_sum is None else mps_sum + set_sum
+        mps_count += mps_windows.shape[0]
+    mean_mps = (mps_sum / mps_count).astype(mps_windows.dtype)
     for iSet in range(pairCount):
         srData["datasets"][iSet]["events"]["mps_windows"] = (
             srData["datasets"][iSet]["events"]["mps_windows"] - mean_mps
