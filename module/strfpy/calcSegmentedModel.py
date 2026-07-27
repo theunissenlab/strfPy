@@ -268,7 +268,7 @@ def generate_dogs_features(
     feature_key,
     event_index_key="index",
     resp_key="psth",
-    dogs_args=np.zeros((2, 7)),
+    dogs_args=None,
     nPoints=300
 ):
     """
@@ -288,6 +288,8 @@ def generate_dogs_features(
     """
     # we will generate X and Y for each pair
     # dogs_args should be a numpy array of size nEventsTypes x 7
+    if dogs_args is None:
+        dogs_args = np.zeros((2, 7))
     nEventsTypes = dogs_args.shape[0]
     nT = pair["resp"][resp_key].size
     feature = pair["events"][feature_key]
@@ -343,7 +345,7 @@ def generate_laguerre_features(
     feature_key,
     event_index_key="index",
     resp_key="psth",
-    laguerre_args=np.zeros((2, 2)),
+    laguerre_args=None,
     nLaguerrePoints=300,
     nLaguerre=5,
 ):
@@ -365,6 +367,8 @@ def generate_laguerre_features(
     """
     # we will generate X and Y for each pair
     # laguerre_args should be a numpy array of size nEventsTypes x 3
+    if laguerre_args is None:
+        laguerre_args = np.zeros((2, 2))
     nEventsTypes = laguerre_args.shape[0]
     nT = pair["resp"][resp_key].size
     feature = pair["events"][feature_key]
@@ -637,9 +641,6 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
         # This normalization is done at the srData level so that the relative amplitude of the stims is preserved. 
         # dBMax = spectro.max()
         # spectro[spectro < dBMax - DBNOISE] = dBMax - DBNOISE
-
-        # set the y ticks to freq
-        nFreqs = len(srData["datasets"][iSet]["stim"]["tfrep"]["f"])
 
         ampenv = np.mean(seg_spectro, axis=0)
         ampfs = srData["datasets"][iSet]["stim"]["sampleRate"]
@@ -1000,7 +1001,7 @@ def generate_event_pca_feature(srData, event_types, feature, pca = None, npcs=20
 
 # fitting funcitons
 def fit_seg(
-    srData, nPoints, x_feature, y_feature = 'psth_smooth', y_R2feature = None, y_R2SingleTrialFeature = None, snrEst = 1.0, kernel = 'Kernel', basis_args = [], nD=2, pair_train_set=None, tol = np.array([0.2, 0.1, 0.05, 0.01, 0.005, 0.001, 0.0005, 0.0001, 0.00001, 0]),
+    srData, nPoints, x_feature, y_feature = 'psth_smooth', y_R2feature = None, y_R2SingleTrialFeature = None, snrEst = 1.0, kernel = 'Kernel', basis_args = None, nD=2, pair_train_set=None, tol = np.array([0.2, 0.1, 0.05, 0.01, 0.005, 0.001, 0.0005, 0.0001, 0.00001, 0]),
 store_error = False):
     """
     Fits a segmented model to the given data using ridge regresseion and leave one out cross-validation
@@ -1016,10 +1017,12 @@ store_error = False):
     basis_args: arguments for the DG or LG kernels
     nD (int): The number of kernel functions for the convolutional models. 2 is the number for 'kernel', 5 is the number for 'DG' and 20 is a good option for 'LG' kernel.
     pair_train_set (list): List of dataset indices to use for training.
-    tol: the ridge hyperparameter expressed as a scale of the stimulus auto-correlation 
+    tol: the ridge hyperparameter expressed as a scale of the stimulus auto-correlation
     Returns:
         segMpdel: The ridge regression model for segmentation/identification - currently a dictionary. To be maade into a class
     """
+    if basis_args is None:
+        basis_args = []
 
     # Checking if truncation of data is creating issues
     truncate_zero_weight = False

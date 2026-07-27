@@ -85,9 +85,11 @@ def _threshold_spectrograms(datasets, max_stim_amp, DBNOISE):
         datasets[k]['stim']['tfrep']['spec'] = spec
 
 
-def preprocess_sound_raw_nospike(stim_lookup, all_trials, preprocess_type='ft', stim_params={}):
+def preprocess_sound_raw_nospike(stim_lookup, all_trials, preprocess_type='ft', stim_params=None):
+    if stim_params is None:
+        stim_params = {}
     # params
-    DBNOISE = 80.0  
+    DBNOISE = 80.0
     stim_sample_rate = 1000.0
     
     # now we have all the spike times aligned to the stimulus onset for all stimuli
@@ -134,9 +136,11 @@ def preprocess_sound_raw_nospike(stim_lookup, all_trials, preprocess_type='ft', 
 
     return srData
 
-def preprocess_sound_raw(unit_spike_times, stim_lookup, all_trials, preprocess_type='ft', stim_params={}, resp_type='spikes'):
+def preprocess_sound_raw(unit_spike_times, stim_lookup, all_trials, preprocess_type='ft', stim_params=None, resp_type='spikes'):
+    if stim_params is None:
+        stim_params = {}
     # params
-    DBNOISE = 80.0  
+    DBNOISE = 80.0
     stim_sample_rate = 1000.0
     resp_sample_rate = 1000.0
     
@@ -611,7 +615,9 @@ def calc_psth(spike_times,  psth_dur_s, t_start_s=0, bin_size=1, durations=None,
         psth = np.convolve(psth, wHann, mode='same')
     return np.arange(nbins)*bin_size/1000 + t_start_s, psth * 1000 / bin_size
 
-def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft', stim_params={}, stim_loader=None, pb_fix=None, ignore_intervals=False):
+def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft', stim_params=None, stim_loader=None, pb_fix=None, ignore_intervals=False):
+    if stim_params is None:
+        stim_params = {}
     # check if nwb_file is a path
     if isinstance(nwb_file, nwb.NWBFile):
         nwbfile = nwb_file
@@ -747,7 +753,9 @@ def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft'
 
     return srData
 
-def preprocess_sound_nwb_multiunits(nwb_file, intervals_name, unit_ids, preprocess_type='ft', stim_params={}, stim_loader=None, pb_fix=None, ignore_intervals=False):
+def preprocess_sound_nwb_multiunits(nwb_file, intervals_name, unit_ids, preprocess_type='ft', stim_params=None, stim_loader=None, pb_fix=None, ignore_intervals=False):
+    if stim_params is None:
+        stim_params = {}
     # check if nwb_file is a path
     if isinstance(nwb_file, nwb.NWBFile):
         nwbfile = nwb_file
@@ -871,7 +879,9 @@ def preprocess_sound_nwb_multiunits(nwb_file, intervals_name, unit_ids, preproce
 
     return srData
 
-def preprocess_sound_nwb_singletrial(nwb_file, intervals_name, unit_id, preprocess_type='ft', stim_params={}, stim_loader=None, pb_fix=None, ignore_intervals=False):
+def preprocess_sound_nwb_singletrial(nwb_file, intervals_name, unit_id, preprocess_type='ft', stim_params=None, stim_loader=None, pb_fix=None, ignore_intervals=False):
+    if stim_params is None:
+        stim_params = {}
     # TODO this is WIP
     with nwb.NWBHDF5IO(nwb_file, 'r') as io:
         # params
