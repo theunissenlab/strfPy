@@ -6,66 +6,8 @@
 import os
 import numpy as np
 import scipy.signal as sps
-import pandas
 
 from .calcAvg import df_cal_AVG, df_Check_And_Load
-from .calcAvg import calculateLeaveOneOutAverages
-
-def crosscorr(stim, psth, nlags):
-    # TODO there may be a smarter way to do this with tensors
-    # also could use FFT to speed it up
-    lags = np.arange(-nlags,nlags+1)
-    nsamps = stim.shape[1]
-    nbins = stim.shape[0]
-    ac = np.zeros((nbins,len(lags)))
-    for lag in lags:
-        stim_slice = slice(max(0,lag), min(nsamps,nsamps+lag))
-        psth_slice = slice(stim_slice.start-lag, stim_slice.stop-lag)
-        # nbin x nsamp @ nsamp x 1 matrix by row
-        temp = stim[:,stim_slice] @ psth.T[psth_slice]
-        ac[:,lag] += temp.flatten()
-    return ac #/ np.arange(stim.shape[1], stim.shape[1] - nlags, -1)
-
-def calculateCrossCorr(dfStrfLab:pandas.DataFrame, nlags:int=74):
-    """
-    Calculate stimulus spike cross correlation.
-
-    """
-    if 'stim_loo_avg' not in dfStrfLab.columns:
-        print("Leave one out averages not found in dataframe. running calculateLeaveOneOutAverages()")
-        calculateLeaveOneOutAverages(dfStrfLab)
-
-    # calculate cross correlation between stims and psths
-    def _apply_crosscorr(row, nlags):
-        normed_stim = row['stim'] - row['stim_loo_avg'].reshape(-1, 1)
-        normed_psth = row['psth'] - row['psth_loo_avg']
-        return crosscorr(normed_stim, normed_psth, nlags)
-    cross_corrs = dfStrfLab.apply(_apply_crosscorr,nlags=nlags,axis=1) # each cross_corr has dims (nbands, 2*nlags-1)
-    # scale by nTrials
-    cross_corrs *= dfStrfLab['nTrials']
-    # stack into 3d array for easier jackknifing
-    cross_corrs = np.stack(cross_corrs.values) # stack into 3d array (nfiles, nbands, 2*nlags+1)
-    
-    # now calculate weights for normalization
-    weights = dfStrfLab['stim'].apply(lambda x:
-        np.correlate(np.ones(x.shape[1]), np.ones(x.shape[1]), mode="same")[int(x.shape[1]/2-nlags):int(x.shape[1]/2+nlags+1)]
-        ) * dfStrfLab['nTrials']
-    weights = np.stack(weights.values)
-
-    # normalize cross_corrs by weights
-    #cross_corrs /= weights[:,np.newaxis,:]
-
-    # now calculate Jackknifed cross-correlations
-    # this yields a matrix of indices leaving out the current row
-    N = len(cross_corrs.shape[0])
-    idx = np.arange(1, N) - np.tri(N, N-1, k=-1, dtype=bool)
-    all_cross_corr_minus_one = cross_corrs[idx] # shape (nfiles, nfiles-1, nbands, 2*nlags+1)
-    all_weights_minus_one = weights[idx] # shape (nfiles, nfiles-1, 2*nlags+1)
-    # now calculate the mean of the cross-correlations leaving out each file
-    # this is the jackknifed cross-correlation
-    cross_corrs_jn = all_cross_corr_minus_one.sum(axis=1) / all_weights_minus_one.sum(axis=1)[:, np.newaxis]
-
-    return cross_corrs
 
 def df_cal_CrossCorr(DS, PARAMS, stim_avg=None, avg_psth=None, psth=None,
                      twindow=None, nband=None, end_window=0, JN_flag=True):
@@ -222,30 +164,6 @@ def df_cal_CrossCorr(DS, PARAMS, stim_avg=None, avg_psth=None, psth=None,
     os.chdir(currentPath)
 
     return CSR, CSR_JN, errFlg
-
-
-
-
-# def df_internal_cal_CrossCorr(stimval, psthval, twin, do_fourier=None):
-#     nband = stimval.shape[0]
-#     CSR_JN = np.zeros((nband, 2*twin+1))
-#     N = len(psthval)
-#     td_time = 2.5e-8*nband*N*(1+2*twin) #time in s to calculate using a time-domain algorithm
-#     fd_time = 2e-7*N*np.log(N+1)*nband #time in s to calculate using a Fourier-domain algorithm
-#     if do_fourier is None:
-#         do_fourier = fd_time < td_time
-#     if do_fourier:
-#         for ib1 in range(nband):
-
-#             CSR_JN[ib1,:] = np.correlate(stimval[ib1,:], psthval.flatten(), mode="full")
-#     else:
-#         pt = psthval.T
-#         for tid in range(-twin, twin+1):
-#             onevect = np.arange(max(1,tid+1), min(N,N+tid))
-#             othervect = onevect - tid
-#             temp = np.dot(stimval[:,onevect], pt[othervect])
-#             CSR_JN[:,tid+twin] = temp
-#     return CSR_JN
 
 
 def df_internal_cal_CrossCorr(stimval, psthval, twin, do_fourier=None):

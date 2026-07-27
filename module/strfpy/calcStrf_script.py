@@ -6,7 +6,6 @@ import numpy as np
 import os
 
 
-from .cache import df_create_stim_cache_file, df_create_spike_cache_file, df_checksum, df_dir_of_caches
 from .calcStrf import df_cal_Strf
 from .calcCrossCorr import fft_crosscorr_jn
 
