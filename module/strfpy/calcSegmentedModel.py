@@ -8,7 +8,7 @@ from scipy.signal import windows, fftconvolve
 from scipy.special import genlaguerre
 from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
-from sklearn.decomposition import PCA
+from sklearn.decomposition import PCA, IncrementalPCA
 from sklearn.linear_model import RidgeCV
 import pynwb as nwb
 import pickle
@@ -990,32 +990,47 @@ def generate_event_pca_feature(srData, event_types, feature, pca = None, npcs=20
     nfeats = srData["datasets"][0]["events"]["%s_nfeats" % feature]
     pairCount = len(srData["datasets"])
 
-    # FIt the pca on the features - notice that this is not weighted.
-    if (pca == None) :
-        all_spect_windows = np.concatenate(
-        [
-            np.asarray(srData["datasets"][iSet]["events"][feature]).reshape(
-                (len(srData["datasets"][iSet]["events"]["index"]), nfeats)
-            )
-         for iSet in range(pairCount)
-        ],
-        axis=0,
-        )
-        pca = PCA(n_components=npcs)
-        pca.fit(all_spect_windows)
+    def dataset_windows(iSet):
+        events = srData["datasets"][iSet]["events"]
+        return np.asarray(events[feature]).reshape((len(events["index"]), nfeats))
 
-
+    # Fit the pca on the features - notice that this is not weighted.
+    if (pca is None) :
+        # Stream the fit one dataset at a time instead of concatenating every
+        # event's window across the *entire* corpus into one dense array
+        # first -- that concatenation was the single largest transient
+        # allocation in segmented-model preprocessing (total_events x nfeats,
+        # where nfeats = respChunkLen x nFreqBins).
+        # IncrementalPCA only requires the *first* partial_fit batch to have
+        # at least npcs samples, so buffer just enough leading datasets to
+        # clear that bar, then stream the rest one dataset at a time.
+        pca = IncrementalPCA(n_components=npcs)
+        buffer = []
+        buffer_n = 0
+        for iSet in range(pairCount):
+            windows = dataset_windows(iSet)
+            if getattr(pca, "n_samples_seen_", 0) == 0:
+                buffer.append(windows)
+                buffer_n += windows.shape[0]
+                if buffer_n >= npcs:
+                    pca.partial_fit(np.concatenate(buffer, axis=0))
+                    buffer = []
+                    buffer_n = 0
+            else:
+                pca.partial_fit(windows)
+        if buffer:
+            # Fewer than npcs events across the *whole* corpus -- fall back
+            # to fitting on everything gathered (matches old behavior).
+            pca.partial_fit(np.concatenate(buffer, axis=0))
 
     # Calculate and store the PC coefficients
     for iSet in range(pairCount):
         events = srData["datasets"][iSet]["events"][event_types]
         n_events = len(srData["datasets"][iSet]["events"]["index"])
-        spect_pca_features = pca.transform(
-            srData["datasets"][iSet]["events"][feature].reshape((n_events, nfeats))
-        )
+        spect_pca_features = pca.transform(dataset_windows(iSet)).astype(np.float32)
 
         srData["datasets"][iSet]["events"]["pca_%s" % feature] = np.zeros(
-            (n_events, nEventTypes * npcs)
+            (n_events, nEventTypes * npcs), dtype=np.float32
         )
 
         for iEventType in range(events.shape[1]):
@@ -1069,26 +1084,21 @@ store_error = False):
             x = x[:, np.newaxis]
         nFeatures = x.shape[1]
   
-    # 1. Calculate the averages to zero out data
-    all_x = []
-    all_y = []
-    all_yw = []
-
-    xavg = np.zeros((nSets,nD*nFeatures, 1))
-    count = np.zeros(nSets)
-    yavg = np.zeros(nSets)
-
-    # We are not going to store the feature matrix, x, but recalculate them to save RAM
-    for iS, iSet in enumerate(pair_train_set):
-        # Get the x and y
+    # We are not going to store the feature matrix, x, across the whole
+    # function -- it is (nD*nFeatures x T) per stimulus, and for kernels with
+    # a large nD*nFeatures (e.g. 'LG') or sessions with many stimuli, caching
+    # one per stimulus for the whole fit_seg call was the dominant memory
+    # cost of a single call. Recompute it on demand in each of the three
+    # passes below instead.
+    def _get_xyw(iSet):
         pair = srData["datasets"][iSet]
         x = generate_x(pair, x_feature, basis_args = basis_args, xGen = kernel, nPoints=nPoints, nLaguerre=nD)
 
-        y = pair["resp"][y_feature]  
+        y = pair["resp"][y_feature]
         if "weights" not in pair["resp"]:
             yw = np.ones_like(y)
         else:
-            yw = pair["resp"]["weights"][0:len(y)]   # The processed fatures might be shorter (why?) 
+            yw = pair["resp"]["weights"][0:len(y)]   # The processed fatures might be shorter (why?)
 
         # Eliminate entres with zero weight - this is not needed but should make smaller x and y
         if (truncate_zero_weight):
@@ -1097,10 +1107,15 @@ store_error = False):
             y = y[yw > 0]
             yw = yw[yw > 0]
 
-        all_x.append(x)
-        all_y.append(y)
-        all_yw.append(yw)
+        return x, y, yw
 
+    # 1. Calculate the averages to zero out data
+    xavg = np.zeros((nSets,nD*nFeatures, 1))
+    count = np.zeros(nSets)
+    yavg = np.zeros(nSets)
+
+    for iS, iSet in enumerate(pair_train_set):
+        x, y, yw = _get_xyw(iSet)
 
         xavg[iS, :, :] = np.sum(x*yw.T, axis=1, keepdims=True)
         count[iS] = np.sum(yw)
@@ -1114,28 +1129,14 @@ store_error = False):
         xavg[iS,:,:] = (xsumAll - xavg[iS,:,:])/(countAll - count[iS])
         yavg[iS] = (ysumAll - yavg[iS])/(countAll - count[iS])
 
-     
+
     # 3 Calculate the leave one out auto-covariance (XX.t) and cross-covariance (XY), and the norm of XX.t
     Cxx = np.zeros((nSets,nD*nFeatures,nD*nFeatures))
     Cxy = np.zeros((nSets,nD*nFeatures))
 
     for iS, iSet in enumerate(pair_train_set):
-        # pair = srData["datasets"][iSet] 
-        # x = generate_x(pair, x_feature, basis_args = basis_args, xGen = kernel, nPoints=nPoints, nLaguerre=nD)      
-        # y = pair["resp"][y_feature]  
-        # if "weights" not in pair["resp"]:
-        #     yw = np.ones_like(y)
-        # else:
-        #     yw = pair["resp"]["weights"][0:len(y)]
+        x, y, yw = _get_xyw(iSet)
 
-        # x = x[:, 0:len(y)]
-        # x = x[:, yw> 0]
-        # y = y[yw > 0]
-        # yw = yw[yw>0]
-        x = all_x[iS]
-        y = all_y[iS]
-        yw = all_yw[iS]
-        
         # Auto-Covariance and Cross-Covariances matrices, the square roots multiply to give a weight to the squares
         Cxx[iS,:,:] = ((x-xavg[iS,:,:])*(np.sqrt(yw)).T) @ ((x-xavg[iS,:,:])*(np.sqrt(yw)).T).T
         # Cxy[iS,:] = ((x-xavg[iS,:,:])*(np.sqrt(yw)).T) @ ((y-yavg[iS])*(np.sqrt(yw)))
@@ -1144,7 +1145,7 @@ store_error = False):
     CxxAll = np.sum(Cxx, axis=0)
     CxyAll = np.sum(Cxy, axis=0)
     CxxNorm = np.zeros(nSets)
-    
+
     for iS in range(nSets):
         Cxx[iS,:,:] = (CxxAll - Cxx[iS,:,:])/(countAll - count[iS])
         Cxy[iS,:] = (CxyAll - Cxy[iS,:])/(countAll - count[iS])
@@ -1152,7 +1153,7 @@ store_error = False):
             CxxNorm[iS] = np.linalg.norm(np.squeeze(Cxx[iS, :, :]-np.diag(np.diag(np.squeeze(Cxx[iS, :, :])))))
         else:
             CxxNorm[iS] = np.linalg.norm(np.squeeze(Cxx[iS, :, :]))
-            
+
 
     ranktol = tol * np.max(CxxNorm)
 
@@ -1162,7 +1163,6 @@ store_error = False):
     u = np.zeros(Cxx.shape)
     v = np.zeros(Cxx.shape)
     s = np.zeros(Cxy.shape)     # This is just the diagonal
-    hJN = np.zeros(Cxy.shape)
     nb = Cxx.shape[1]
 
     if ( kernel == 'Kernel' ):
@@ -1173,54 +1173,43 @@ store_error = False):
         for iS in range(nSets):
             u[iS,:,:],s[iS,:],v[iS,:,:] = np.linalg.svd(Cxx[iS,:,:])
 
-    R2CV = np.zeros(ranktol.shape[0])
+    # 4b. Sweep tolerance values, computing leave-one-out R2CV at each.
+    # Looping stimulus-outer/tolerance-inner (rather than the reverse, as
+    # this used to) means x/y/yw are (re)computed once per stimulus and
+    # reused across every tolerance value in the sweep, instead of needing
+    # every stimulus's x cached simultaneously for the whole sweep.
+    n_tol = ranktol.shape[0]
+    simple_sum_yy = np.zeros(n_tol)
+    simple_sum_y = np.zeros(n_tol)
+    simple_sum_error = np.zeros(n_tol)
+    simple_sum_count = np.zeros(n_tol)
+    is_mat = np.zeros((nb, nb))
 
-    for it, tolval in enumerate(ranktol):
+    for iS, iSet in enumerate(pair_train_set):
+        x, y, yw = _get_xyw(iSet)
+        pair = srData["datasets"][iSet]
 
-        simple_sum_yy = 0
-        simple_sum_y =  0
-        simple_sum_error = 0
-        simple_sum_count = 0
+        for it, tolval in enumerate(ranktol):
 
-        for iS, iSet in enumerate(pair_train_set):
-            
             if (kernel == 'Kernel'):
                 diagCxx = np.diag(np.diag(np.squeeze(Cxx[iS,:,:])))
                 Cxx_inv = nearDiagInv_optim(diagCxx, u[iS,:,:], s[iS,:], v[iS,:,:], tol=tolval)
-                hJN[iS,:] = Cxx_inv @ Cxy[iS,:]
+                hJN_iS = Cxx_inv @ Cxy[iS,:]
             elif (kernel == 'Kernel2'):
                 diagCxx = np.diag(np.diag(np.squeeze(Cxx[iS,:,:])))
                 Cxx_inv = nearDiagInv2(np.squeeze(Cxx[iS,:,:]), diagCxx,  tol=tolval)
-                hJN[iS,:] = Cxx_inv @ Cxy[iS,:]
+                hJN_iS = Cxx_inv @ Cxy[iS,:]
             else:
-                is_mat = np.zeros((nb, nb))
                 # ridge regression - regularized normal equation
+                # (only the diagonal of is_mat is ever written -- reused
+                # across iterations rather than reallocated each time)
                 for ii in range(nb):
-                    is_mat[ii,ii] = 1.0/(s[iS, ii] + tolval)       
-                # hJN[iS,:] = v[iS, :, :].T @ is_mat @ (u[iS, :, :].T @ Cxy[iS,:])
-                hJN[iS,:] = u[iS, :, :] @ is_mat @ (v[iS, :, :] @ Cxy[iS,:])
+                    is_mat[ii,ii] = 1.0/(s[iS, ii] + tolval)
+                # hJN_iS = v[iS, :, :].T @ is_mat @ (u[iS, :, :].T @ Cxy[iS,:])
+                hJN_iS = u[iS, :, :] @ is_mat @ (v[iS, :, :] @ Cxy[iS,:])
 
-            # Find x and actual y for leave out set to asses fit
-            pair = srData["datasets"][iSet]
-
-            # x = generate_x(pair, x_feature, basis_args = basis_args, xGen = kernel, nPoints=nPoints, nLaguerre=nD)      
-            # y = pair["resp"][y_feature]  
-            # if "weights" not in pair["resp"]:
-            #     yw = np.ones_like(y)
-            # else:
-            #     yw = pair["resp"]["weights"][0:len(y)]
-
-            # x = x[:, 0:len(y)]
-            # x = x[:, yw> 0]
-            # y = y[yw > 0]
-            # yw = yw[yw >0]
-
-            x = all_x[iS]
-            y = all_y[iS]
-            yw = all_yw[iS]
-    
             # Get the prediciton
-            ypred = hJN[iS, :]@ (x - xavg[iS]) + yavg[iS]
+            ypred = hJN_iS @ (x - xavg[iS]) + yavg[iS]
 
             # Store it if asked
             if (store_error):
@@ -1232,30 +1221,24 @@ store_error = False):
                 yr2 = pair['resp'][y_R2feature][0:len(y)]
                 if truncate_zero_weight:
                     yr2 = yr2[yw>0]
-                ypred += (yr2 - y)
+                ypred = ypred + (yr2 - y)
 
             # Rectify - this should be a flag
             ypred[ypred<0] = 0
 
             # Get values to calculate R2-CV - here it is the coefficient of determination
-            sum_count = np.sum(yw)
-            sum_y = np.sum(yr2*yw)
-            sum_yy = np.sum(yr2*yr2*yw)
-            sum_error2 = np.sum(((ypred-yr2)**2)*yw)
+            simple_sum_count[it] += np.sum(yw)
+            simple_sum_y[it] += np.sum(yr2*yw)
+            simple_sum_yy[it] += np.sum(yr2*yr2*yw)
+            simple_sum_error[it] += np.sum(((ypred-yr2)**2)*yw)
 
-            simple_sum_yy += sum_yy
-            simple_sum_y +=  sum_y
-            simple_sum_error += sum_error2
-            simple_sum_count += sum_count
-        
+    y_mean = simple_sum_y/simple_sum_count
+    y_var = simple_sum_yy/simple_sum_count - y_mean**2
+    y_error = simple_sum_error/simple_sum_count
 
-        y_mean = simple_sum_y/simple_sum_count
-        y_var = simple_sum_yy/simple_sum_count - y_mean**2
-        y_error = simple_sum_error/simple_sum_count
+    # This is not a "one-trial" CV
+    R2CV = 1.0 - y_error/y_var
 
-        # This is not a "one-trial" CV
-        R2CV[it] = 1.0 - y_error/y_var
-     
     # Find the best tolerance level, i.e. the ridge penalty hyper-parameter
     segModel = {}
     itMax = np.argmax(R2CV)
