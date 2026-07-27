@@ -35,7 +35,11 @@ def trnDirectFit(modelParams, globalDat):
     modelParams.setdefault('infoFreqCutoff', 100)
     modelParams.setdefault('infoWindowSize', 0.500)
     modelParams.setdefault('TimeLagUnit', 'frame')
-    modelParams.setdefault('outputPath', tempfile.gettempdir())
+    # A run-scoped directory, not the shared system temp dir: direct_fit()/calcStrfs()
+    # write intermediate files with fixed names (df_temp_stim_0.npy, stim_avg.npz,
+    # strfResult_Tol1.npz, ...) with no cleanup, so two runs sharing gettempdir()
+    # would silently overwrite each other's intermediate results.
+    modelParams.setdefault('outputPath', tempfile.mkdtemp(prefix='strfpy_directfit_'))
     modelParams.setdefault('TimeLag', int(np.ceil(np.max(np.abs(modelParams['delays'])))))
 
     if modelParams['respsamprate'] != modelParams['ampsamprate']:
@@ -186,7 +190,14 @@ def trnDirectFit(modelParams, globalDat):
     if not modelParams['timevary_PSTH']:
         modelParams['b1'] = respAvg
     else:
-        modelParams['b1'] = tvRespAvg[p, :mresp.shape[1]]
+        # `tvRespAvg` holds one leave-one-stimulus-out baseline per group (row p is
+        # the baseline used when group p was held out). The final model is refit on
+        # all groups, so no single row is "correct" here -- previously this indexed
+        # with `p`/`mresp` left over from the last iteration of the k/q/p search
+        # above, an arbitrary stimulus unrelated to the selected (bestTol,
+        # bestSparseness). Average across groups instead for a baseline that isn't
+        # tied to a leftover loop variable.
+        modelParams['b1'] = np.mean(tvRespAvg, axis=0)
 
     options = {
         'outputDir': modelParams['outputPath'],

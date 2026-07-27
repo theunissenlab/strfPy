@@ -171,14 +171,14 @@ def df_cal_AVG(DDS, PARAMS, nband=None, psth_option=None, lin_flag=1, sil_window
     if not DDS:
         print("ERROR: Please enter non-empty data filename")
         errFlg = 1
-        return None, None, None, None, errFlg
+        return None, None, None, errFlg
 
     NBAND = DF_PARAMS.get("NBAND")
     if nband is None:
         if NBAND is None:
             print("You need assign variable NBAND first.")
             errFlg = 1
-            return None, None, None, None, errFlg
+            return None, None, None, errFlg
         nband = NBAND
 
     # Add parameter 'psth_option' to specifiy psth noise removal option
@@ -223,9 +223,7 @@ def df_cal_AVG(DDS, PARAMS, nband=None, psth_option=None, lin_flag=1, sil_window
         if isinstance(rawResp, list):
             spiketrain = np.zeros((DDS[n]["ntrials"], this_len))
             for trial_ind in range(DDS[n]["ntrials"]):
-                spiketrain[trial_ind, rawResp[trial_ind]] = np.ones(
-                    1, len(rawResp[trial_ind])
-                )
+                spiketrain[trial_ind, rawResp[trial_ind]] = 1
             if ampsamprate and respsamprate:
                 newpsth = resample(spiketrain.T, ampsamprate, respsamprate)
             else:
@@ -252,7 +250,7 @@ def df_cal_AVG(DDS, PARAMS, nband=None, psth_option=None, lin_flag=1, sil_window
                 "Data error, first data file needs to be stimuli, second needs to be response."
             )
             errFlg = 1
-            return
+            return None, None, None, errFlg
         stim_avg += np.sum(stim_env[:,:nt] * weight[:nt], axis=1)
         count_avg += np.sum(weight[:nt])
 
@@ -312,17 +310,13 @@ def df_cal_AVG(DDS, PARAMS, nband=None, psth_option=None, lin_flag=1, sil_window
         ]
 
     # save the stim_avg into the data file
-    currentPath = os.getcwd()
     outputPath = DF_PARAMS["outputPath"]
-    if outputPath is not None:
-        os.chdir(outputPath)
-    else:
+    if outputPath is None:
         # Take care of empty outputPath case
-        currentPath = os.getcwd()
+        outputPath = os.getcwd()
         print(
-            f"No output path specified for intermediate results, defaulting to {currentPath}"
+            f"No output path specified for intermediate results, defaulting to {outputPath}"
         )
-        outputPath = currentPath
 
     stim_avg = stim_avg / count_avg
     constmeanrate = Avg_psth / tot_trials

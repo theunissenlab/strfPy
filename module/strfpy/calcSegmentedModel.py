@@ -413,7 +413,7 @@ def generate_laguerre_features(
 def get_simple_prediction_r2_Values(pair, ridge_conv_filter, nPoints, ntrials: int, smWindow = 31, mult_values=False):
 # Returns all componnents needed to calculate the r2 for the segmented model
     
-    if ~isinstance(ntrials, int):
+    if not isinstance(ntrials, int):
         try:
             ntrials = int(ntrials)
         except ValueError:
@@ -452,7 +452,7 @@ def get_simple_prediction_r2_Values(pair, ridge_conv_filter, nPoints, ntrials: i
 def get_prediction_r2_Values(pair, ridge, feature, laguerre_args, ridge_conv_filter, nPoints, ntrials: int, smWindow = 31, nLaguerre=5):
 # Returns all componnents needed to calculate the r2 for the segmented + Identification model
     
-    if ~isinstance(ntrials, int):
+    if not isinstance(ntrials, int):
         try:
             ntrials = int(ntrials)
         except ValueError:
@@ -2002,10 +2002,10 @@ def process_unit(nwb_file, unit_name, model_dir=None, trials_type='playback_tria
         'r2segIDModelLG' : r2segIDModelLG,
         'r2segIDModelDG' : r2segIDModelDG,
         'r2segIDModelLGMPS' : r2segIDModelLGMPS,
-        'r2segIDModelDG' : r2segIDModelDGMPS,
+        'r2segIDModelDGMPS' : r2segIDModelDGMPS,
         'r2STRF' : r2STRF
     }
-    
+
     return result
 
 def process_unit_nostrf(nwb_file, unit_name, model_dir=None, trials_type='playback_trials'):
@@ -2105,8 +2105,8 @@ def process_unit_nostrf(nwb_file, unit_name, model_dir=None, trials_type='playba
         'r2segIDModelLG' : r2segIDModelLG,
         'r2segIDModelDG' : r2segIDModelDG,
         'r2segIDModelLGMPS' : r2segIDModelLGMPS,
-        'r2segIDModelDG' : r2segIDModelDGMPS,
+        'r2segIDModelDGMPS' : r2segIDModelDGMPS,
     }
-    
+
     return result
-    
+
