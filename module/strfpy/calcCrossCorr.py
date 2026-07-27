@@ -269,26 +269,61 @@ def df_internal_cal_CrossCorr(stimval, psthval, twin, do_fourier=None):
     return CSR_JN
 
 
+def fft_autocorr_rows(stim, TimeLag):
+    """FFT every row of a (ncorr, nt) real autocorrelation array after
+    Hanning windowing and the circular shift that puts lag 0 first.
+
+    This is the per-row transform that used to live inline inside
+    df_fft_AutoCrossCorr, applied identically to the grand-total
+    autocorrelation and to every one of `filecount` jackknife replicates in
+    a single Python double loop. It is now a standalone, vectorized
+    (row-batched instead of looped) helper so it can be called once for the
+    (small) grand total and, separately, once per stimulus for however many
+    jackknife replicates are being processed in the current batch --
+    calcStrf.df_cal_Strf calls this per-batch rather than needing every
+    replicate's transform computed and held at once.
+    """
+    nt = 2 * TimeLag + 1
+    nt2 = (nt - 1) // 2
+    w = np.hanning(nt)
+
+    w_stim = stim * w
+    sh_stim = np.empty_like(w_stim)
+    sh_stim[:, :nt2+1] = w_stim[:, nt2:nt]
+    sh_stim[:, nt2+1:] = w_stim[:, :nt2]
+
+    return np.fft.fft(sh_stim, axis=1)
+
+
 # converted with chatgpt: df_fft_AutoCrossCorr.m
 # 20230405
-def df_fft_AutoCrossCorr(stim, stim_JN, stim_spike, CSR_JN, TimeLag, NBAND, nstd_val):
-    
-    ncorr = stim.shape[0]
+def fft_crosscorr_jn(stim_spike, CSR_JN, TimeLag, NBAND, nstd_val):
+    """FFT the (small, nb x nt x filecount) stimulus-response cross-
+    correlation and its jackknife replicates, applying a shrinkage taper
+    derived from the variance across replicates. Split out of the old
+    df_fft_AutoCrossCorr, which bundled this together with the (large,
+    quadratic-in-channel-count) autocorrelation FFT -- see
+    fft_autocorr_rows for that half. This part does not need batching: the
+    cross-correlation jackknife array is nb x nt x filecount (not
+    nb(nb+1)/2 x nt x filecount), orders of magnitude smaller than the
+    autocorrelation one for realistic channel counts.
+    """
+
     nb = NBAND
     nt = 2 * TimeLag + 1
     nJN = len(CSR_JN)
-    
+
     w = np.hanning(nt)
-    
+
     stim_spike = np.fliplr(stim_spike)
     for ib in range(nb):
         stim_spike[ib,:] = stim_spike[ib,:] * w
-    
+
     stim_spike_JN = np.zeros((nb, nt, nJN))
     for iJN in range(nJN):
         for ib in range(nb):
             stim_spike_JN[ib,:,iJN] = np.flipud(CSR_JN[iJN][ib,:]) * w
-    
+
     stim_spike_JNf = np.fft.fft(stim_spike_JN, axis=1)
     stim_spike_JNmf = np.mean(stim_spike_JNf, axis=2)
     stim_spikef = np.fft.fft(stim_spike, axis=1)
@@ -296,16 +331,12 @@ def df_fft_AutoCrossCorr(stim, stim_JN, stim_spike, CSR_JN, TimeLag, NBAND, nstd
     JNv = (nJN - 1) * (nJN - 1) / nJN
     j = 1j
     nf = (nt - 1) // 2 + 1
-    
+
     stim_spike_JNvf = np.zeros((nb, nf), dtype=complex)
-    fstim = np.zeros(stim.shape, dtype=complex)
-    fstim_JN = []
-    for iJN in range(nJN):
-        fstim_JN.append(np.zeros(stim.shape, dtype=complex))
 
     stim_spike_sf = np.zeros((nb, nt),dtype=complex)#, nJN))
     #fstim_spike = stim_spike_sf
-    
+
     for ib in range(nb):
         itstart = 0
         itend = nf
@@ -337,21 +368,6 @@ def df_fft_AutoCrossCorr(stim, stim_JN, stim_spike, CSR_JN, TimeLag, NBAND, nstd
                 stim_spike_JNf[ib,nt-it,:] = np.conj(stim_spike_JNf[ib,it,:])
     fstim_spike = stim_spike_sf
 
-    nt2=int((nt-1)/2)
-    sh_stim = np.zeros(nt)
-    for i in range(ncorr):       
-        w_stim =  stim[i,:]*w
-        sh_stim[:nt2+1]=w_stim[nt2:nt]
-        sh_stim[nt2+1:nt]=w_stim[:nt2]
-        fstim[i,:] = np.fft.fft(sh_stim)
-        for iJN in range(nJN):
-            w_stim =  stim_JN[iJN][i,:]*w
-            sh_stim[:nt2+1]=w_stim[nt2:nt]
-            sh_stim[nt2+1:nt]=w_stim[:nt2]
-            fstim_JN[iJN][i,:] = np.fft.fft(sh_stim)
-
-
-
-    return fstim, fstim_JN, fstim_spike, stim_spike_JNf
+    return fstim_spike, stim_spike_JNf
 
 
