@@ -1238,33 +1238,29 @@ store_error = False):
 
 
 # high level function
-def process_unit_strf(nwb_file, unit_name, model_dir=None, trials_type='playback_trials'):
-    respChunkLen = 100 # ms of stim to use in each chunk of feature space
-    segmentBuffer = 30 # ms to add at the beginning of each segment
-    strfLength = 200 # number of points in the STRF in sampling rate - 200 ms for Theunissen data
-    smooth_rt = 31 # smoothing window for the R2 calculation for the strf.  The segmented model is also fitted on a smooth_psth with the same time window.
-    all_models = dict()
-
-    # Calculate spectrogram, smooth psth and make a new object the stimulus-response Data: srData
-    srData = preprocSound.preprocess_sound_nwb(nwb_file, trials_type, unit_name, preprocess_type='ft')
-    preprocess_srData(srData, plot=False, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = False)
-
-    # Estimate the single trial SNR for this data set
-    snrEst, *_ = preprocSound.estimate_SNR(srData)
-    evOne= snrEst/(snrEst + 1)     # The expected variance (R2-ceiling) for one trial
-
+def _compute_snr_and_EV(srData):
+    """Shared by process_unit_strf/process_unit/process_unit_nostrf: the
+    single-trial SNR estimate for this dataset, plus the expected-variance
+    R2 ceiling computed by weighting it across every dataset's actual
+    (trial-count-dependent) response weights.
+    """
+    snrEst, f, snrEstf, cumInfo, totWeight = preprocSound.estimate_SNR(srData)
     r2num = 0
     r2den = 0
     for pair in srData["datasets"]:
         yw = pair["resp"]["weights"]
         r2num += np.sum(snrEst*yw)
         r2den += np.sum(1+snrEst*yw)
-
     EV = r2num/r2den
+    return snrEst, f, snrEstf, cumInfo, totWeight, EV
 
-    # The Classic STRF
 
-    # Initialize the linear time invariant model. Here we choose 200 delay points 
+def _fit_classic_strf(srData, strfLength, smooth_rt):
+    """Shared by process_unit_strf/process_unit: fit the classic linear
+    STRF via direct-fit on the full srData, and return the fitted
+    modelParams plus its best (max) cross-validated R2.
+    """
+    # Initialize the linear time invariant model.
     nStimChannels = srData['nStimChannels']
     strfDelays = np.arange(strfLength)
     modelParams = strfSetup.linInit(nStimChannels, strfDelays)
@@ -1272,7 +1268,7 @@ def process_unit_strf(nwb_file, unit_name, model_dir=None, trials_type='playback
     # Convert srData into a format that strflab understands
     allstim, allresp, allweights, groupIndex = strfSetup.srdata2strflab(srData, useRaw = False)
     globDat = strfSetup.strfData(allstim, allresp, allweights, groupIndex)
-    
+
     # Additional model options
     modelParams['Tol_val'] = [0.100, 0.050, 0.010, 0.005, 1e-03, 1e-04, 5e-05, 0]  # These are the same as the default in fit_seg
     modelParams['sparsenesses'] = [0, 1, 2, 3, 4, 5, 6, 7]   # The sparseness is a lasso like regularization
@@ -1286,37 +1282,66 @@ def process_unit_strf(nwb_file, unit_name, model_dir=None, trials_type='playback
     modelParams['outputPath'] = os.path.join(tempfile.gettempdir(), srData['UUID'])  # Temporary path to store the results
     modelParams['TimeLag'] =  int(np.ceil(np.max(np.abs(modelParams['delays']))))
 
-
     # Run direct fit optimization on all of the data
     modelParams, _ = trnDirectFit.trnDirectFit(modelParams, globDat)
     r2STRF = modelParams['R2CV'].max()
+    return modelParams, r2STRF
+
+
+def _resolve_identifier(nwb_file):
     if isinstance(nwb_file, nwb.NWBFile):
-        identifier = nwb_file.identifier
-    else:
-        identifier = nwb_file
+        return nwb_file.identifier
+    return nwb_file
+
+
+def _save_models(all_models, model_dir, identifier, unit_name):
+    """Shared by process_unit_strf/process_unit/process_unit_nostrf: pickle
+    every fitted model to model_dir/{identifier}_{unit_name}/. No-op if
+    model_dir is None.
+    """
+    if model_dir is None:
+        return
+    if not os.path.exists(model_dir):
+        os.makedirs(model_dir)
+    print("Saving Models to %s" % model_dir)
+    unit_model_dir = os.path.join(model_dir, f"{identifier}_{unit_name}")
+    if not os.path.exists(unit_model_dir):
+        os.makedirs(unit_model_dir)
+    # Save the models as pickle files
+    for model in all_models.keys():
+        model_path = os.path.join(unit_model_dir, f"{int(unit_name)}_{model}.pkl")
+        with open(model_path, 'wb') as f:
+            pickle.dump(all_models[model], f)
+    print("Models saved successfully.")
+
+
+def process_unit_strf(nwb_file, unit_name, model_dir=None, trials_type='playback_trials'):
+    respChunkLen = 100 # ms of stim to use in each chunk of feature space
+    segmentBuffer = 30 # ms to add at the beginning of each segment
+    strfLength = 200 # number of points in the STRF in sampling rate - 200 ms for Theunissen data
+    smooth_rt = 31 # smoothing window for the R2 calculation for the strf.  The segmented model is also fitted on a smooth_psth with the same time window.
+    all_models = dict()
+
+    # Calculate spectrogram, smooth psth and make a new object the stimulus-response Data: srData
+    srData = preprocSound.preprocess_sound_nwb(nwb_file, trials_type, unit_name, preprocess_type='ft')
+    preprocess_srData(srData, plot=False, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = False)
+
+    # Estimate the single trial SNR for this data set and its EV (R2 ceiling)
+    snrEst, _f, _snrEstf, _cumInfo, _totWeight, EV = _compute_snr_and_EV(srData)
+
+    # The Classic STRF
+    modelParams, r2STRF = _fit_classic_strf(srData, strfLength, smooth_rt)
+    identifier = _resolve_identifier(nwb_file)
     all_models['strfModel'] = modelParams
 
-    # we will save the models to the model directory
-    if model_dir is not None:
-        if not os.path.exists(model_dir):
-            os.makedirs(model_dir)
-        print("Saving Models to %s" % model_dir)
-        unit_model_dir = os.path.join(model_dir, f"{identifier}_{unit_name}")
-        if not os.path.exists(unit_model_dir):
-            os.makedirs(unit_model_dir)
-        # Save the models as pickle files
-        for model in all_models.keys():
-            model_path = os.path.join(unit_model_dir, f"{int(unit_name)}_{model}.pkl")
-            with open(model_path, 'wb') as f:
-                pickle.dump(all_models[model], f)
-        print("Models saved successfully.")
+    _save_models(all_models, model_dir, identifier, unit_name)
     result = {
         'nwb_file_identifier': identifier,
         'unit' : unit_name,
         'r2Ceil' : EV,
         'r2STRF' : r2STRF
     }
-    
+
     return result
 
 def process_unit(nwb_file, unit_name, model_dir=None, trials_type='playback_trials'):
@@ -1346,17 +1371,8 @@ def process_unit(nwb_file, unit_name, model_dir=None, trials_type='playback_tria
     srData = preprocSound.preprocess_sound_nwb(nwb_file, trials_type, unit_name, preprocess_type='ft')
     preprocess_srData(srData, plot=False, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = False, derivativeThresh=0.3)
 
-    # Estimate the single trial SNR for this data set
-    snrEst, f, snrEstf, cumInfo, totWeight  = preprocSound.estimate_SNR(srData)
-    evOne= snrEst/(snrEst + 1)     # The expected variance (R2-ceiling) for one trial - not used here
-    r2num = 0
-    r2den = 0
-    for pair in srData["datasets"]:
-        yw = pair["resp"]["weights"]
-        r2num += np.sum(snrEst*yw)
-        r2den += np.sum(1+snrEst*yw)
-
-    EV = r2num/r2den
+    # Estimate the single trial SNR for this data set and its EV (R2 ceiling)
+    snrEst, f, snrEstf, cumInfo, totWeight, EV = _compute_snr_and_EV(srData)
 
     # Fit the segmentation (on-off here) kernel (impulse response)
     segModel = fit_seg(srData, nPoints, x_feature = event_types, y_feature = 'psth_smooth', kernel = 'Kernel0', nD=2, tol=np.array([0.1, 0.01, 0.001, 0.0001]), store_error = True  )
@@ -1391,53 +1407,11 @@ def process_unit(nwb_file, unit_name, model_dir=None, trials_type='playback_tria
     all_models['segIDModelDGMPS'] = segIDModelDGMPS
 
     # The Classic STRF
-
-    # Initialize the linear time invariant model. Here we choose 200 delay points 
-    nStimChannels = srData['nStimChannels']
-    strfDelays = np.arange(strfLength)
-    modelParams = strfSetup.linInit(nStimChannels, strfDelays)
-
-    # Convert srData into a format that strflab understands
-    allstim, allresp, allweights, groupIndex = strfSetup.srdata2strflab(srData, useRaw = False)
-    globDat = strfSetup.strfData(allstim, allresp, allweights, groupIndex)
-    
-    # Additional model options
-    modelParams['Tol_val'] = [0.100, 0.050, 0.010, 0.005, 1e-03, 1e-04, 5e-05, 0]  # These are the same as the default in fit_seg
-    modelParams['sparsenesses'] = [0, 1, 2, 3, 4, 5, 6, 7]   # The sparseness is a lasso like regularization
-    modelParams['timevary_PSTH'] = 0           # This is to calculate a time-varying mean across all stim
-    modelParams['smooth_rt'] = smooth_rt
-    modelParams['ampsamprate'] = srData['stimSampleRate']
-    modelParams['respsamprate'] = srData['respSampleRate']
-    modelParams['infoFreqCutoff'] = 100        # For the coherence-based Info calculation this is the frequency CutOff in Hz
-    modelParams['infoWindowSize'] = 0.250      # Window size in s for the coherence estimate
-    modelParams['TimeLagUnit'] = 'frame'       # Can be set to 'frame' or 'msec'
-    modelParams['outputPath'] = os.path.join(tempfile.gettempdir(), srData['UUID'])  # Temporary path to store the results
-    modelParams['TimeLag'] =  int(np.ceil(np.max(np.abs(modelParams['delays']))))
-
-
-    # Run direct fit optimization on all of the data
-    modelParams, _ = trnDirectFit.trnDirectFit(modelParams, globDat)
-    r2STRF = modelParams['R2CV'].max()
-    if isinstance(nwb_file, nwb.NWBFile):
-        identifier = nwb_file.identifier
-    else:
-        identifier = nwb_file
+    modelParams, r2STRF = _fit_classic_strf(srData, strfLength, smooth_rt)
+    identifier = _resolve_identifier(nwb_file)
     all_models['strfModel'] = modelParams
 
-    # we will save the models to the model directory
-    if model_dir is not None:
-        if not os.path.exists(model_dir):
-            os.makedirs(model_dir)
-        print("Saving Models to %s" % model_dir)
-        unit_model_dir = os.path.join(model_dir, f"{identifier}_{unit_name}")
-        if not os.path.exists(unit_model_dir):
-            os.makedirs(unit_model_dir)
-        # Save the models as pickle files
-        for model in all_models.keys():
-            model_path = os.path.join(unit_model_dir, f"{int(unit_name)}_{model}.pkl")
-            with open(model_path, 'wb') as f:
-                pickle.dump(all_models[model], f)
-        print("Models saved successfully.")
+    _save_models(all_models, model_dir, identifier, unit_name)
     result = {
         'nwb_file_identifier': identifier,
         'unit' : unit_name,
@@ -1484,17 +1458,8 @@ def process_unit_nostrf(nwb_file, unit_name, model_dir=None, trials_type='playba
     srData = preprocSound.preprocess_sound_nwb(nwb_file, trials_type, unit_name, preprocess_type='ft')
     preprocess_srData(srData, plot=False, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = False, derivativeThresh=0.3)
 
-    # Estimate the single trial SNR for this data set
-    snrEst, *_ = preprocSound.estimate_SNR(srData)
-    evOne= snrEst/(snrEst + 1)     # The expected variance (R2-ceiling) for one trial
-    r2num = 0
-    r2den = 0
-    for pair in srData["datasets"]:
-        yw = pair["resp"]["weights"]
-        r2num += np.sum(snrEst*yw)
-        r2den += np.sum(1+snrEst*yw)
-
-    EV = r2num/r2den
+    # Estimate the single trial SNR for this data set and its EV (R2 ceiling)
+    snrEst, _f, _snrEstf, _cumInfo, _totWeight, EV = _compute_snr_and_EV(srData)
 
     # Fit the segmentation (on-off here) kernel (impulse response)
     segModel = fit_seg(srData, nPoints, x_feature = event_types, y_feature = 'psth_smooth', kernel = 'Kernel', nD=2, tol=np.array([0.1, 0.01, 0.001, 0.0001, 0.00001, 0]), store_error = True  )
@@ -1528,25 +1493,9 @@ def process_unit_nostrf(nwb_file, unit_name, model_dir=None, trials_type='playba
     all_models['segIDModelLGMPS'] = segIDModelLGMPS
     all_models['segIDModelDGMPS'] = segIDModelDGMPS
     
-    if isinstance(nwb_file, nwb.NWBFile):
-        identifier = nwb_file.identifier
-    else:
-        identifier = nwb_file
+    identifier = _resolve_identifier(nwb_file)
 
-    # we will save the models to the model directory
-    if model_dir is not None:
-        if not os.path.exists(model_dir):
-            os.makedirs(model_dir)
-        print("Saving Models to %s" % model_dir)
-        unit_model_dir = os.path.join(model_dir, f"{identifier}_{unit_name}")
-        if not os.path.exists(unit_model_dir):
-            os.makedirs(unit_model_dir)
-        # Save the models as pickle files
-        for model in all_models.keys():
-            model_path = os.path.join(unit_model_dir, f"{int(unit_name)}_{model}.pkl")
-            with open(model_path, 'wb') as f:
-                pickle.dump(all_models[model], f)
-        print("Models saved successfully.")
+    _save_models(all_models, model_dir, identifier, unit_name)
     result = {
         'nwb_file_identifier': identifier,
         'unit' : unit_name,
