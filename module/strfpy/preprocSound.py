@@ -43,6 +43,48 @@ def Pearson_r(x,y):
     return np.sum((x-xyMean)*(y-xyMean))/np.sqrt(np.sum((x-xyMean)**2)*np.sum((y-xyMean)**2))
 
 
+def _build_stim_dataset(stim_data, stim_fs, stim_name, preprocess_type, stim_params, stim_sample_rate):
+    """Compute a stimulus's spectrogram and package it into the `stim`
+    sub-dict used throughout srData. This exact sequence (set the standard
+    spectrogram parameters, compute the tfrep, wrap it with its metadata)
+    used to be duplicated inline in six of the srData-builder functions
+    below; preprocess_sound (the one legacy builder that loads spectrograms
+    from cached .npz files via `timefreq` rather than a raw waveform array)
+    is not routed through this helper.
+    """
+    stim_params['fband'] = 120
+    stim_params['nstd'] = 6
+    stim_params['high_freq'] = 8000
+    stim_params['low_freq'] = 250
+    stim_params['log'] = 1
+    stim_params['stim_rate'] = stim_sample_rate
+    tfrep = timefreq_raw(stim_data, stim_fs, preprocess_type, stim_params)
+    return {
+        'type': 'tfrep',
+        'rawFile': stim_name,
+        'tfrep': tfrep,
+        'rawSampleRate': tfrep['params']['rawSampleRate'],
+        'sampleRate': stim_sample_rate,
+        'stimLength': tfrep['spec'].shape[1] / stim_sample_rate,
+        'nStimChannels': tfrep['f'].shape[0],
+        'maxStimAmp': np.max(tfrep["spec"])
+    }
+
+
+def _threshold_spectrograms(datasets, max_stim_amp, DBNOISE):
+    """Normalize every dataset's spectrogram to a common noise floor
+    relative to the loudest stimulus in the set. This needs its own pass
+    over `datasets` after every stimulus has already been seen once, since
+    `max_stim_amp` isn't known until then -- this should probably be
+    elsewhere or at least consistent with log.
+    """
+    for k in range(len(datasets)):
+        spec = datasets[k]['stim']['tfrep']['spec']
+        spec = spec - max_stim_amp + DBNOISE
+        spec[spec<0] = 0.0
+        datasets[k]['stim']['tfrep']['spec'] = spec
+
+
 def preprocess_sound_raw_nospike(stim_lookup, all_trials, preprocess_type='ft', stim_params={}):
     # params
     DBNOISE = 80.0  
@@ -59,23 +101,7 @@ def preprocess_sound_raw_nospike(stim_lookup, all_trials, preprocess_type='ft', 
         # preprocess the stimuli by loading the wav and generating the tfrep
         wav_file_name = stim_name #raw_stim_files[k]
         stim_fs, stim_data = stim_lookup(stim_name)
-        stim_params['fband'] = 120
-        stim_params['nstd'] = 6
-        stim_params['high_freq'] = 8000
-        stim_params['low_freq'] = 250
-        stim_params['log'] = 1
-        stim_params['stim_rate'] = stim_sample_rate
-        tfrep = timefreq_raw(stim_data,stim_fs, preprocess_type, stim_params)
-        stim = {
-            'type': 'tfrep',
-            'rawFile': stim_name,
-            'tfrep': tfrep,
-            'rawSampleRate': tfrep['params']['rawSampleRate'],
-            'sampleRate': stim_sample_rate,
-            'stimLength': tfrep['spec'].shape[1] / stim_sample_rate,
-            'nStimChannels' : tfrep['f'].shape[0],
-            'maxStimAmp': np.max(tfrep["spec"])
-        }
+        stim = _build_stim_dataset(stim_data, stim_fs, stim_name, preprocess_type, stim_params, stim_sample_rate)
         ds['stim'] = stim
 
         if (n_stim_channels == -1 ):
@@ -89,12 +115,7 @@ def preprocess_sound_raw_nospike(stim_lookup, all_trials, preprocess_type='ft', 
         datasets.append(ds)
     # end loop over stimuli
 
-    # Threshold spectrogram - this should probably be elsewhere or at least consistent with log
-    for k in range(len(datasets)):
-        spec = datasets[k]['stim']['tfrep']['spec']
-        spec = spec - max_stim_amp + DBNOISE
-        spec[spec<0] = 0.0
-        datasets[k]['stim']['tfrep']['spec'] = spec
+    _threshold_spectrograms(datasets, max_stim_amp, DBNOISE)
 
     
     
@@ -131,23 +152,7 @@ def preprocess_sound_raw(unit_spike_times, stim_lookup, all_trials, preprocess_t
         # preprocess the stimuli by loading the wav and generating the tfrep
         wav_file_name = stim_name #raw_stim_files[k]
         stim_fs, stim_data = stim_lookup(stim_name)
-        stim_params['fband'] = 120
-        stim_params['nstd'] = 6
-        stim_params['high_freq'] = 8000
-        stim_params['low_freq'] = 250
-        stim_params['log'] = 1
-        stim_params['stim_rate'] = stim_sample_rate
-        tfrep = timefreq_raw(stim_data,stim_fs, preprocess_type, stim_params)
-        stim = {
-            'type': 'tfrep',
-            'rawFile': stim_name,
-            'tfrep': tfrep,
-            'rawSampleRate': tfrep['params']['rawSampleRate'],
-            'sampleRate': stim_sample_rate,
-            'stimLength': tfrep['spec'].shape[1] / stim_sample_rate,
-            'nStimChannels' : tfrep['f'].shape[0],
-            'maxStimAmp': np.max(tfrep["spec"])
-        }
+        stim = _build_stim_dataset(stim_data, stim_fs, stim_name, preprocess_type, stim_params, stim_sample_rate)
         ds['stim'] = stim
 
         if (n_stim_channels == -1 ):
@@ -236,12 +241,7 @@ def preprocess_sound_raw(unit_spike_times, stim_lookup, all_trials, preprocess_t
         datasets.append(ds)
     # end loop over stimuli
 
-    # Threshold spectrogram - this should probably be elsewhere or at least consistent with log
-    for k in range(len(datasets)):
-        spec = datasets[k]['stim']['tfrep']['spec']
-        spec = spec - max_stim_amp + DBNOISE
-        spec[spec<0] = 0.0
-        datasets[k]['stim']['tfrep']['spec'] = spec
+    _threshold_spectrograms(datasets, max_stim_amp, DBNOISE)
 
     
     
@@ -362,23 +362,7 @@ def generate_srData_nwb_single_trials(nwb, intervals_name, unit_id, balanceFlg =
         stim_data = get_mic_data(nwb, row)
         stim_fs = audio_rate
         stim_params=dict()
-        stim_params['fband'] = 120
-        stim_params['nstd'] = 6
-        stim_params['high_freq'] = 8000
-        stim_params['low_freq'] = 250
-        stim_params['log'] = 1
-        stim_params['stim_rate'] = stim_sample_rate
-        tfrep = timefreq_raw(stim_data,stim_fs, 'ft', stim_params)
-        stim = {
-            'type': 'tfrep',
-            'rawFile': stim_name,
-            'tfrep': tfrep,
-            'rawSampleRate': tfrep['params']['rawSampleRate'],
-            'sampleRate': stim_sample_rate,
-            'stimLength': tfrep['spec'].shape[1] / stim_sample_rate,
-            'nStimChannels' : tfrep['f'].shape[0],
-            'maxStimAmp': np.max(tfrep["spec"])
-        }
+        stim = _build_stim_dataset(stim_data, stim_fs, stim_name, 'ft', stim_params, stim_sample_rate)
         ds['stim'] = stim
         
         if (n_stim_channels == -1 ):
@@ -423,12 +407,7 @@ def generate_srData_nwb_single_trials(nwb, intervals_name, unit_id, balanceFlg =
         datasets.append(ds)
     # end loop over trials
 
-    # Threshold spectrogram - this should probably be elsewhere or at least consistent with log
-    for k in range(len(datasets)):
-        spec = datasets[k]['stim']['tfrep']['spec']
-        spec = spec - max_stim_amp + DBNOISE
-        spec[spec<0] = 0.0
-        datasets[k]['stim']['tfrep']['spec'] = spec
+    _threshold_spectrograms(datasets, max_stim_amp, DBNOISE)
 
     
     
@@ -553,12 +532,7 @@ def generate_srData_nwb(nwb, intervals_name, unit_id):
         datasets.append(ds)
     # end loop over stimuli
 
-    # Threshold spectrogram - this should probably be elsewhere or at least consistent with log
-    for k in range(len(datasets)):
-        spec = datasets[k]['stim']['tfrep']['spec']
-        spec = spec - max_stim_amp + DBNOISE
-        spec[spec<0] = 0.0
-        datasets[k]['stim']['tfrep']['spec'] = spec
+    _threshold_spectrograms(datasets, max_stim_amp, DBNOISE)
 
     
     
@@ -683,23 +657,7 @@ def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft'
         stim_data = nwbfile.stimulus[stim_name].data[:]
         zero_segs = find_long_zero_segments(stim_data, min_length=10)
         stim_fs = nwbfile.stimulus[stim_name].rate
-        stim_params['fband'] = 120
-        stim_params['nstd'] = 6
-        stim_params['high_freq'] = 8000
-        stim_params['low_freq'] = 250
-        stim_params['log'] = 1
-        stim_params['stim_rate'] = stim_sample_rate
-        tfrep = timefreq_raw(stim_data,stim_fs, preprocess_type, stim_params)
-        stim = {
-            'type': 'tfrep',
-            'rawFile': stim_name,
-            'tfrep': tfrep,
-            'rawSampleRate': tfrep['params']['rawSampleRate'],
-            'sampleRate': stim_sample_rate,
-            'stimLength': tfrep['spec'].shape[1] / stim_sample_rate,
-            'nStimChannels' : tfrep['f'].shape[0],
-            'maxStimAmp': np.max(tfrep["spec"])
-        }
+        stim = _build_stim_dataset(stim_data, stim_fs, stim_name, preprocess_type, stim_params, stim_sample_rate)
         ds['stim'] = stim
 
         if (n_stim_channels == -1 ):
@@ -766,12 +724,7 @@ def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft'
         datasets.append(ds)
     # end loop over stimuli
 
-    # Threshold spectrogram - this should probably be elsewhere or at least consistent with log
-    for k in range(len(datasets)):
-        spec = datasets[k]['stim']['tfrep']['spec']
-        spec = spec - max_stim_amp + DBNOISE
-        spec[spec<0] = 0.0
-        datasets[k]['stim']['tfrep']['spec'] = spec
+    _threshold_spectrograms(datasets, max_stim_amp, DBNOISE)
 
     
     
@@ -825,23 +778,7 @@ def preprocess_sound_nwb_multiunits(nwb_file, intervals_name, unit_ids, preproce
         stim_data = nwbfile.stimulus[stim_name].data[:]
         zero_segs = find_long_zero_segments(stim_data, min_length=10)
         stim_fs = nwbfile.stimulus[stim_name].rate
-        stim_params['fband'] = 120
-        stim_params['nstd'] = 6
-        stim_params['high_freq'] = 8000
-        stim_params['low_freq'] = 250
-        stim_params['log'] = 1
-        stim_params['stim_rate'] = stim_sample_rate
-        tfrep = timefreq_raw(stim_data,stim_fs, preprocess_type, stim_params)
-        stim = {
-            'type': 'tfrep',
-            'rawFile': stim_name,
-            'tfrep': tfrep,
-            'rawSampleRate': tfrep['params']['rawSampleRate'],
-            'sampleRate': stim_sample_rate,
-            'stimLength': tfrep['spec'].shape[1] / stim_sample_rate,
-            'nStimChannels' : tfrep['f'].shape[0],
-            'maxStimAmp': np.max(tfrep["spec"])
-        }
+        stim = _build_stim_dataset(stim_data, stim_fs, stim_name, preprocess_type, stim_params, stim_sample_rate)
         ds['stim'] = stim
 
         if (n_stim_channels == -1 ):
@@ -917,12 +854,7 @@ def preprocess_sound_nwb_multiunits(nwb_file, intervals_name, unit_ids, preproce
         datasets.append(ds)
     # end loop over stimuli
 
-    # Threshold spectrogram - this should probably be elsewhere or at least consistent with log
-    for k in range(len(datasets)):
-        spec = datasets[k]['stim']['tfrep']['spec']
-        spec = spec - max_stim_amp + DBNOISE
-        spec[spec<0] = 0.0
-        datasets[k]['stim']['tfrep']['spec'] = spec
+    _threshold_spectrograms(datasets, max_stim_amp, DBNOISE)
 
     
     
@@ -977,23 +909,7 @@ def preprocess_sound_nwb_singletrial(nwb_file, intervals_name, unit_id, preproce
             wav_file_name = stim_name #raw_stim_files[k]
             stim_data = nwbfile.stimulus[stim_name].data[:]
             stim_fs = nwbfile.stimulus[stim_name].rate
-            stim_params['fband'] = 120
-            stim_params['nstd'] = 6
-            stim_params['high_freq'] = 8000
-            stim_params['low_freq'] = 250
-            stim_params['log'] = 1
-            stim_params['stim_rate'] = stim_sample_rate
-            tfrep = timefreq_raw(stim_data,stim_fs, preprocess_type, stim_params)
-            stim = {
-                'type': 'tfrep',
-                'rawFile': stim_name,
-                'tfrep': tfrep,
-                'rawSampleRate': tfrep['params']['rawSampleRate'],
-                'sampleRate': stim_sample_rate,
-                'stimLength': tfrep['spec'].shape[1] / stim_sample_rate,
-                'nStimChannels' : tfrep['f'].shape[0],
-                'maxStimAmp': np.max(tfrep["spec"])
-            }
+            stim = _build_stim_dataset(stim_data, stim_fs, stim_name, preprocess_type, stim_params, stim_sample_rate)
             ds['stim'] = stim
 
             if (n_stim_channels == -1 ):
@@ -1048,12 +964,7 @@ def preprocess_sound_nwb_singletrial(nwb_file, intervals_name, unit_id, preproce
             datasets.append(ds)
         # end loop over stimuli
 
-        # Threshold spectrogram - this should probably be elsewhere or at least consistent with log
-        for k in range(len(datasets)):
-            spec = datasets[k]['stim']['tfrep']['spec']
-            spec = spec - max_stim_amp + DBNOISE
-            spec[spec<0] = 0.0
-            datasets[k]['stim']['tfrep']['spec'] = spec
+        _threshold_spectrograms(datasets, max_stim_amp, DBNOISE)
 
         
         
@@ -1435,12 +1346,7 @@ def preprocess_sound(raw_stim_files, raw_resp_files, preprocess_type='ft', stim_
 
         datasets[k] = ds
 
-    # Threshold spectrogram - this should probably be elsewhere or at least consistent with log
-    for k in range(pair_count):
-        spec = datasets[k]['stim']['tfrep']['spec']
-        spec = spec - max_stim_amp + DBNOISE
-        spec[spec<0] = 0.0
-        datasets[k]['stim']['tfrep']['spec'] = spec
+    _threshold_spectrograms(datasets, max_stim_amp, DBNOISE)
 
     
        
