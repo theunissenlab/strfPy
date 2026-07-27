@@ -410,20 +410,27 @@ def generate_laguerre_features(
     return X
 
 
-def get_simple_prediction_r2_Values(pair, ridge_conv_filter, nPoints, ntrials: int, smWindow = 31, mult_values=False):
-# Returns all componnents needed to calculate the r2 for the segmented model
-    
+def _resolve_ntrials_and_smoothed_psth(pair, ntrials: int, smWindow):
+    """Shared by get_simple_prediction_r2_Values/get_prediction_r2_Values:
+    resolve `ntrials` to an int, and return the smoothed PSTH `y` to score
+    predictions against. If fewer trials are actually available than
+    requested, returns None for `y` (caller should bail out with the
+    all-zero r2 components). If more trials are available than requested,
+    the PSTH is recomputed from just the first `ntrials` trials' raw spike
+    times and re-smoothed; otherwise the dataset's own psth_smooth is used
+    as-is.
+    """
     if not isinstance(ntrials, int):
         try:
             ntrials = int(ntrials)
         except ValueError:
             raise ValueError("ntrials argument must be an integer or convertible")
-        
+
     resp = pair['resp']
     nactual = len(resp['trialDurations'])
 
     if (nactual < ntrials):
-        return 0, 0, 0, 0, 0, 0
+        return ntrials, None
     elif (nactual > ntrials):
         # The Hanning window
         wHann = windows.hann(
@@ -443,44 +450,26 @@ def get_simple_prediction_r2_Values(pair, ridge_conv_filter, nPoints, ntrials: i
     else :
         y = pair["resp"]["psth_smooth"]
 
+    return ntrials, y
+
+
+def get_simple_prediction_r2_Values(pair, ridge_conv_filter, nPoints, ntrials: int, smWindow = 31, mult_values=False):
+# Returns all componnents needed to calculate the r2 for the segmented model
+    ntrials, y = _resolve_ntrials_and_smoothed_psth(pair, ntrials, smWindow)
+    if y is None:
+        return 0, 0, 0, 0, 0, 0
+
     x = arbitrary_kernel(pair, nPoints=nPoints, resp_key='psth_smooth', mult_values=mult_values)
     y_pred = ridge_conv_filter.predict(x.T)
-    
+
     return np.sum(y), np.sum(y*y), np.sum(y_pred), np.sum(y_pred*y_pred), np.sum(y*y_pred), len(y_pred)
 
 
 def get_prediction_r2_Values(pair, ridge, feature, laguerre_args, ridge_conv_filter, nPoints, ntrials: int, smWindow = 31, nLaguerre=5):
 # Returns all componnents needed to calculate the r2 for the segmented + Identification model
-    
-    if not isinstance(ntrials, int):
-        try:
-            ntrials = int(ntrials)
-        except ValueError:
-            raise ValueError("ntrials argument must be an integer or convertible")
-        
-    resp = pair['resp']
-    nactual = len(resp['trialDurations'])
-
-    if (nactual < ntrials):
+    ntrials, y = _resolve_ntrials_and_smoothed_psth(pair, ntrials, smWindow)
+    if y is None:
         return 0, 0, 0, 0, 0, 0
-    elif (nactual > ntrials):
-        # The Hanning window
-        wHann = windows.hann(
-            smWindow, sym=True
-        )  # The 31 ms (number of points) hanning window used to smooth the PSTH
-        wHann = wHann / sum(wHann)
-        # recalculate the psth_smooth
-        bin_size = 1
-        nbins = len(resp['psth'])
-
-        weights = (resp['trialDurations'][0:ntrials] >= np.arange(nbins)[:, None]).sum(axis=1)
-        psth_idx, counts = np.unique(np.round(np.concatenate(resp['rawSpikeTimes'][0:ntrials]) * 1000 / bin_size).astype(int), return_counts=True)
-        psth = np.zeros(nbins)
-        psth[psth_idx[psth_idx < nbins]] = counts[psth_idx < nbins]
-        psth[weights > 0] /= weights[weights > 0]
-        y = np.convolve(psth, wHann, mode="same")
-    else :
-        y = pair["resp"]["psth_smooth"]
 
     y_pred = generate_prediction(pair, ridge, feature, laguerre_args, nPoints, nLaguerre)
 
@@ -511,23 +500,7 @@ def gen_y_avg(pair, ridge_conv_filter, nPoints=200, mult_values=False):
 def generate_prediction(
     pair, ridge, feature, basis_args, nPoints=200, nLaguerre=5
 ):
-    if (nLaguerre > 0) :
-        x = generate_laguerre_features(
-        pair,
-        feature_key="pca_%s" % feature,
-        resp_key='psth_smooth',
-        laguerre_args=basis_args[:,0:2],
-        nLaguerrePoints=nPoints,
-        nLaguerre=nLaguerre,
-        )
-    else:
-        x = generate_dogs_features(
-        pair,
-        feature_key="pca_%s" % feature,
-        resp_key='psth_smooth',
-        dogs_args=basis_args,
-        nPoints=nPoints
-        )
+    x = generate_x(pair, feature, basis_args=basis_args, xGen=('LG' if nLaguerre > 0 else 'DG'), nPoints=nPoints, nLaguerre=nLaguerre)
 
     y_pred = ridge.predict(x.T)
     y_pred[y_pred < 0] = 0
@@ -590,23 +563,7 @@ def generate_predictionV2 (pair, model, feature, basis_args=None, xGen = 'Kernel
 def generate_pred_score(
     pair, ridge, feature, basis_args, ridge_conv_filter, nPoints=200, nLaguerre=5
 ):
-    if (nLaguerre > 0) :
-        x = generate_laguerre_features(
-        pair,
-        feature_key="pca_%s" % feature,
-        resp_key='psth_smooth',
-        laguerre_args=basis_args[:,0:2],
-        nLaguerrePoints=nPoints,
-        nLaguerre=nLaguerre,
-        )
-    else :
-        x = generate_dogs_features(
-        pair,
-        feature_key="pca_%s" % feature,
-        resp_key='psth_smooth',
-        dogs_args=basis_args,
-        nPoints=nPoints
-        )
+    x = generate_x(pair, feature, basis_args=basis_args, xGen=('LG' if nLaguerre > 0 else 'DG'), nPoints=nPoints, nLaguerre=nLaguerre)
 
     y = pair["resp"]["psth_smooth"]
     return ridge.score(x.T, y)
