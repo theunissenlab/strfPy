@@ -50,7 +50,7 @@ def log_downsample_spec(spec, f, nbins, fmin=200, fmax=8000):
     log_midpoints = (log_freqs[1:] + log_freqs[:-1]) / 2
     # bin the frequencies into 15 log spaced bins
     f_bins = np.searchsorted(log_freqs, f) - 1
-    out_log_spec = np.zeros((nbins, spec.shape[1]))
+    out_log_spec = np.zeros((nbins, spec.shape[1]), dtype=spec.dtype)
     for i in range(nbins):
         inds = f_bins == i
         if np.any(inds):
@@ -787,7 +787,10 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
 
             indwt = np.argwhere((wt > -100) & (wt < 100))
             indwf = np.argwhere((wf >= 0) & (wf < 6e-3))
-            mps_powAvg = mps_powAvg[indwf[:, 0], :][:, indwt[:, 0]]
+            # soundsig.sound.mps computes internally in float64 regardless of
+            # input dtype; downcast the (already time/freq-cropped) result
+            # explicitly since we don't control its internal precision.
+            mps_powAvg = mps_powAvg[indwf[:, 0], :][:, indwt[:, 0]].astype(np.float32)
 
             events["mps_windows"].append(mps_powAvg)
             events["mps_windows_freqs"] = wf[indwf[:, 0]]

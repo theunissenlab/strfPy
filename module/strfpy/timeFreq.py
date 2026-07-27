@@ -31,7 +31,11 @@ def timefreq_raw(inputData, sampleRate, typeName, params=None):
         # Set tfrep values
         tfrep["t"] = t0
         tfrep["f"] = f0
-        tfrep["spec"] = normedS
+        # float32 is ample precision for a magnitude/dB spectrogram derived from
+        # noisy neural recordings, and this is the earliest point every
+        # spectrogram in the package is built from -- halving it here halves
+        # memory for every downstream copy/window/feature derived from it.
+        tfrep["spec"] = normedS.astype(np.float32)
 
     elif typeName == 'wavelet':
         # Do nothing...
