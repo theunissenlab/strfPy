@@ -68,20 +68,20 @@ def calcStrfs(params, CS, CS_JN, CSR, CSR_JN):
     # ===========================================
     print('Calculating STRF for each tol value...')
     nf = (nt-1)//2 + 1
-  
+
+    # The stimulus-autocorrelation SVD at each frequency bin (the dominant
+    # cost below) does not depend on the tolerance value, so compute STRFs
+    # for every tolerance value in one call instead of once per tolerance
+    # value -- df_cal_Strf reuses each frequency bin's SVD across the whole
+    # sweep rather than recomputing it from scratch per tolerance.
+    results = df_cal_Strf(
+                params, fstim, fstim_JN, fstim_spike, stim_spike_JNf,
+                stim_spike_size, stim_spike_JNsize, nb, nt, nJN, Tol_val)
+
     for itol in range(1, ntols+1):
         tol = Tol_val[itol-1]
+        STRF_Cell, STRFJN_Cell, STRFJNstd_Cell = results[itol-1]
 
-        print(f'Now calculating STRF for tol_value: {tol}')
-
-        # =======================================
-        # Calculate strf for each tol val.
-        # =======================================
-        STRF_Cell, STRFJN_Cell, STRFJNstd_Cell = df_cal_Strf(
-                    params, fstim, fstim_JN, fstim_spike, stim_spike_JNf, 
-                    stim_spike_size, stim_spike_JNsize, nb, nt, nJN, tol)
-
-        
         print(f"Done calculation of STRF for tol_value: {tol}\n")
 
         sfilename = f"strfResult_Tol{itol}.npz"
