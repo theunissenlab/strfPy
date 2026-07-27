@@ -11,21 +11,26 @@ authors = [
   { name="kailin zhuang", email="kailinzhuang@gmail.com" },
 ]
 description = "preprocessing of data from our electrophysiological experiemnts"
-readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.9"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
-dynamic = ["dependencies"]
+dependencies = [
+  "numpy>=2.0",
+  "scipy",
+  "pandas",
+  "matplotlib",
+  "scikit-learn",
+  "numba",
+  "pynwb",
+  "soundsig @ git+https://github.com/theunissenlab/soundsig@edf464291ed2d95ef6a36a7f12e24965d7326945",
+]
 
 [project.urls]
 "Homepage" = "https://github.com/kailinzhuang/strfpy"
 "Bug Tracker" = "https://github.com/kailinzhuang/strfpy/issues"
 
-[tool.setuptools]
-py-modules = ["strfpy"]
-
-#[tool.setuptools.dynamic]
-#dependencies = {file = ["requirements.txt"]}
+[tool.setuptools.packages.find]
+include = ["strfpy*"]
