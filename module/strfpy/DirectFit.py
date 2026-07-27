@@ -42,10 +42,14 @@ def direct_fit(params):
 
     print('Now calculating stim auto-correlation')
     autocorr_start_time = time.process_time()
-    CS, CS_JN = df_cal_AutoCorrJN(DS, stim_avg, twindow, NBAND, params)
+    # jn_info carries the small grand totals plus per-stimulus disk cache
+    # paths used to reconstruct leave-one-out values on demand (see
+    # calcAutoCorr.df_cal_AutoCorrJN) -- unlike the old CS_JN, it is not a
+    # list of `len(DS)` full in-RAM arrays, so it is not stashed into
+    # `params` in that form either.
+    CS, jn_info = df_cal_AutoCorrJN(DS, stim_avg, twindow, NBAND, params)
     autocorr_end_time = time.process_time()
     params['CS'] = CS
-    params['CS_JN'] = CS_JN
     print('The auto-correlation took', autocorr_end_time - autocorr_start_time, 'seconds.')
 
     # =========================================================
@@ -64,7 +68,7 @@ def direct_fit(params):
 
     print('Calculating strfs for each tol value.')
 
-    calcStrfs(params, CS, CS_JN, CSR, CSR_JN)
+    calcStrfs(params, CS, jn_info, CSR, CSR_JN, batch_size=params.get('jn_batch_size', 20))
     calculation_endtime = time.process_time()
         
     print(f'The STRF calculation took {calculation_endtime - crosscorr_end_time} seconds.')

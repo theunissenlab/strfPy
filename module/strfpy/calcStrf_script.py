@@ -8,10 +8,10 @@ import os
 
 from .cache import df_create_stim_cache_file, df_create_spike_cache_file, df_checksum, df_dir_of_caches
 from .calcStrf import df_cal_Strf
-from .calcCrossCorr import df_fft_AutoCrossCorr
+from .calcCrossCorr import fft_crosscorr_jn
 
 
-def calcStrfs(params, CS, CS_JN, CSR, CSR_JN):
+def calcStrfs(params, CS, jn_info, CSR, CSR_JN, batch_size=20):
 
     DS = params['DS']
     nb = params['NBAND']
@@ -27,7 +27,7 @@ def calcStrfs(params, CS, CS_JN, CSR, CSR_JN):
     nstd_val = 0.5
 
     # ===========================================
-    # FFT Auto-correlation and Cross-correlation
+    # FFT Cross-correlation (small: nb x nt x filecount, not batched)
     # ===========================================
 
     if TimeLagUnit == 'msec':
@@ -36,11 +36,8 @@ def calcStrfs(params, CS, CS_JN, CSR, CSR_JN):
         twindow = round(TimeLag)
     nt = 2*twindow + 1
 
-    
-    fstim, fstim_JN, fstim_spike, stim_spike_JNf = df_fft_AutoCrossCorr(
-            CS, CS_JN, CSR, CSR_JN, twindow, nb, nstd_val)
-    print('Done df_fft_AutoCrossCorr.')
-
+    fstim_spike, stim_spike_JNf = fft_crosscorr_jn(CSR, CSR_JN, twindow, nb, nstd_val)
+    print('Done fft_crosscorr_jn.')
 
     # ===========================================
     #  Prepare for call STRF_calculation
@@ -51,8 +48,6 @@ def calcStrfs(params, CS, CS_JN, CSR, CSR_JN):
     else:
         nt = 2*round(TimeLag) + 1
     nJN = len(DS)
-    stim_spike_size = fstim_spike.shape
-    stim_spike_JNsize = stim_spike_JNf.shape
 
     # ===========================================
     # Get tolerance values
@@ -67,16 +62,19 @@ def calcStrfs(params, CS, CS_JN, CSR, CSR_JN):
 
     # ===========================================
     print('Calculating STRF for each tol value...')
-    nf = (nt-1)//2 + 1
 
     # The stimulus-autocorrelation SVD at each frequency bin (the dominant
     # cost below) does not depend on the tolerance value, so compute STRFs
     # for every tolerance value in one call instead of once per tolerance
     # value -- df_cal_Strf reuses each frequency bin's SVD across the whole
-    # sweep rather than recomputing it from scratch per tolerance.
+    # sweep rather than recomputing it from scratch per tolerance. The
+    # jackknife replicates (fed from `jn_info`, see calcAutoCorr.py) are
+    # additionally processed in batches of `batch_size` rather than all at
+    # once, since the autocorrelation jackknife array is the dominant
+    # memory cost of a direct-fit run at realistic channel/stimulus counts.
     results = df_cal_Strf(
-                params, fstim, fstim_JN, fstim_spike, stim_spike_JNf,
-                stim_spike_size, stim_spike_JNsize, nb, nt, nJN, Tol_val)
+                CS, jn_info, fstim_spike, stim_spike_JNf,
+                nb, twindow, Tol_val, batch_size=batch_size)
 
     for itol in range(1, ntols+1):
         tol = Tol_val[itol-1]
