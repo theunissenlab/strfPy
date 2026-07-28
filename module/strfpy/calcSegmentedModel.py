@@ -954,15 +954,34 @@ def generate_event_pca_feature(srData, event_types, feature, pca = None, npcs=20
 
     # Fit the pca on the features - notice that this is not weighted.
     if (pca is None) :
+        total_events = sum(len(srData["datasets"][iSet]["events"]["index"]) for iSet in range(pairCount))
+        if total_events == 0:
+            raise ValueError(
+                "generate_event_pca_feature: no events found for feature '%s' "
+                "across any dataset -- cannot fit a PCA basis." % feature
+            )
+        # PCA (batched or incremental) cannot fit more components than there
+        # are samples (or features). If this unit has fewer events than
+        # requested -- e.g. a short session or a unit with few detected
+        # onsets/offsets -- reduce npcs rather than crashing; everything
+        # downstream reads the actual fitted width (pca.n_components_ /
+        # the array shape) rather than assuming exactly `npcs`.
+        npcs_fit = min(npcs, total_events, nfeats)
+        if npcs_fit < npcs:
+            print(
+                "generate_event_pca_feature: only %d events available for feature '%s' "
+                "(requested npcs=%d); reducing to npcs=%d for this unit." % (total_events, feature, npcs, npcs_fit)
+            )
+
         # Stream the fit one dataset at a time instead of concatenating every
         # event's window across the *entire* corpus into one dense array
         # first -- that concatenation was the single largest transient
         # allocation in segmented-model preprocessing (total_events x nfeats,
         # where nfeats = respChunkLen x nFreqBins).
         # IncrementalPCA only requires the *first* partial_fit batch to have
-        # at least npcs samples, so buffer just enough leading datasets to
-        # clear that bar, then stream the rest one dataset at a time.
-        pca = IncrementalPCA(n_components=npcs)
+        # at least npcs_fit samples, so buffer just enough leading datasets
+        # to clear that bar, then stream the rest one dataset at a time.
+        pca = IncrementalPCA(n_components=npcs_fit)
         buffer = []
         buffer_n = 0
         for iSet in range(pairCount):
@@ -970,30 +989,34 @@ def generate_event_pca_feature(srData, event_types, feature, pca = None, npcs=20
             if getattr(pca, "n_samples_seen_", 0) == 0:
                 buffer.append(windows)
                 buffer_n += windows.shape[0]
-                if buffer_n >= npcs:
+                if buffer_n >= npcs_fit:
                     pca.partial_fit(np.concatenate(buffer, axis=0))
                     buffer = []
                     buffer_n = 0
             else:
                 pca.partial_fit(windows)
         if buffer:
-            # Fewer than npcs events across the *whole* corpus -- fall back
-            # to fitting on everything gathered (matches old behavior).
+            # Fewer than npcs_fit events across the *whole* corpus -- fall
+            # back to fitting on everything gathered (matches old behavior).
             pca.partial_fit(np.concatenate(buffer, axis=0))
 
-    # Calculate and store the PC coefficients
+    # Calculate and store the PC coefficients. Use the PCA's actual fitted
+    # width rather than the caller's requested `npcs`: they can differ (see
+    # the npcs_fit reduction above) whether `pca` was just fit here or
+    # passed in already fitted.
+    npcs_actual = pca.n_components_
     for iSet in range(pairCount):
         events = srData["datasets"][iSet]["events"][event_types]
         n_events = len(srData["datasets"][iSet]["events"]["index"])
         spect_pca_features = pca.transform(dataset_windows(iSet)).astype(np.float32)
 
         srData["datasets"][iSet]["events"]["pca_%s" % feature] = np.zeros(
-            (n_events, nEventTypes * npcs), dtype=np.float32
+            (n_events, nEventTypes * npcs_actual), dtype=np.float32
         )
 
         for iEventType in range(events.shape[1]):
             srData["datasets"][iSet]["events"]["pca_%s" % feature][
-                events[:, iEventType] == 1, iEventType * npcs : (iEventType + 1) * npcs
+                events[:, iEventType] == 1, iEventType * npcs_actual : (iEventType + 1) * npcs_actual
             ] = spect_pca_features[events[:, iEventType] == 1, :]
 
     return pca
