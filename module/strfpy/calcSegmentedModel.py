@@ -1132,8 +1132,22 @@ store_error = False):
             diagCxx = np.diag(np.diag(np.squeeze(Cxx[iS,:,:])))
             u[iS,:,:],s[iS,:],v[iS,:,:] = np.linalg.svd(Cxx[iS,:,:]-diagCxx)
     else:
+        # Cxx is symmetric PSD by construction. eigh gives a single,
+        # self-consistent eigenbasis (eigenvectors reused in `u`, `v` left
+        # unused for this branch) -- unlike SVD, whose independently
+        # computed u and v are only guaranteed consistent for
+        # well-conditioned matrices with distinct singular values. Inside
+        # a near-degenerate subspace (common here: 'LG'/'DG' fits can have
+        # nD*nFeatures in the hundreds, easily exceeding the data's actual
+        # degrees of freedom) SVD's u and v can be unrelated arbitrary
+        # bases for that subspace, since a near-zero singular value makes
+        # their product vanish regardless of what they are -- verified
+        # against a direct linear solve that both `u @ is_mat @ v` and the
+        # textbook `v.T @ is_mat @ u.T` become unreliable there, while
+        # eigh stays accurate. eigh is also ~1.5-1.7x faster than svd at
+        # these matrix sizes since it only computes one orthogonal factor.
         for iS in range(nSets):
-            u[iS,:,:],s[iS,:],v[iS,:,:] = np.linalg.svd(Cxx[iS,:,:])
+            s[iS,:], u[iS,:,:] = np.linalg.eigh(Cxx[iS,:,:])
 
     # 4b. Sweep tolerance values, computing leave-one-out R2CV at each.
     # Looping stimulus-outer/tolerance-inner (rather than the reverse, as
@@ -1162,13 +1176,16 @@ store_error = False):
                 Cxx_inv = nearDiagInv2(np.squeeze(Cxx[iS,:,:]), diagCxx,  tol=tolval)
                 hJN_iS = Cxx_inv @ Cxy[iS,:]
             else:
-                # ridge regression - regularized normal equation
+                # ridge regression - regularized normal equation, via the
+                # eigenbasis computed above (Cxx = u diag(s) u.T exactly,
+                # so this is the exact regularized inverse, not an
+                # approximation that depends on SVD's u/v staying
+                # consistent).
                 # (only the diagonal of is_mat is ever written -- reused
                 # across iterations rather than reallocated each time)
                 for ii in range(nb):
                     is_mat[ii,ii] = 1.0/(s[iS, ii] + tolval)
-                # hJN_iS = v[iS, :, :].T @ is_mat @ (u[iS, :, :].T @ Cxy[iS,:])
-                hJN_iS = u[iS, :, :] @ is_mat @ (v[iS, :, :] @ Cxy[iS,:])
+                hJN_iS = u[iS, :, :] @ is_mat @ (u[iS, :, :].T @ Cxy[iS,:])
 
             # Get the prediciton
             ypred = hJN_iS @ (x - xavg[iS]) + yavg[iS]
@@ -1222,11 +1239,11 @@ store_error = False):
         CxxAll_inv = nearDiagInv2(np.squeeze(CxxAll), diagCxx, tol=ranktol[itMax])
         hJNAll = CxxAll_inv @ CxyAll
     else:
-        uAll,sAll,vAll = np.linalg.svd(CxxAll)
+        # See the matching fix/comment in the per-stimulus branch above.
+        sAll, uAll = np.linalg.eigh(CxxAll)
         for ii in range(nb):
             is_mat[ii,ii] = 1.0/(sAll[ii] + ranktol[itMax])
-        # hJNAll = vAll.T @ is_mat @ (uAll.T @ CxyAll)
-        hJNAll = uAll @ is_mat @ (vAll @ CxyAll)
+        hJNAll = uAll @ is_mat @ (uAll.T @ CxyAll)
 
     # The bias term
     b0 = -hJNAll @ (xsumAll/countAll) + (ysumAll/countAll)
