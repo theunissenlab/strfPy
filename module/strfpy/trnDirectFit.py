@@ -1,4 +1,5 @@
 import os
+import shutil
 import tempfile
 import numpy as np
 
@@ -38,15 +39,28 @@ def trnDirectFit(modelParams, globalDat):
     # A run-scoped directory, not the shared system temp dir: direct_fit()/calcStrfs()
     # write intermediate files with fixed names (df_temp_stim_0.npy, stim_avg.npz,
     # strfResult_Tol1.npz, ...) with no cleanup, so two runs sharing gettempdir()
-    # would silently overwrite each other's intermediate results.
+    # would silently overwrite each other's intermediate results. Everything this
+    # call needs from that directory is read back into modelParams before we
+    # return, so if we're the ones who created it (the caller didn't supply
+    # their own outputPath), remove it afterward instead of leaving every
+    # call's multi-hundred-MB of intermediates to accumulate indefinitely.
+    outputPath_was_autocreated = 'outputPath' not in modelParams
     modelParams.setdefault('outputPath', tempfile.mkdtemp(prefix='strfpy_directfit_'))
     modelParams.setdefault('TimeLag', int(np.ceil(np.max(np.abs(modelParams['delays'])))))
 
     if modelParams['respsamprate'] != modelParams['ampsamprate']:
         raise ValueError('trnDirectFit: Stimulus and response sampling rate must be equal!')
 
+    try:
+        return _trnDirectFit_impl(modelParams, globalDat)
+    finally:
+        if outputPath_was_autocreated:
+            shutil.rmtree(modelParams['outputPath'], ignore_errors=True)
+
+
+def _trnDirectFit_impl(modelParams, globalDat):
     os.makedirs(modelParams['outputPath'], exist_ok=True)
-    
+
     # convert strflab's stim/response data format to direct fit's data format
     DS = strflab2DS(globalDat['stim'], globalDat['resp'], globalDat['weight'], globalDat['groupIdx'], modelParams['outputPath'])
 
