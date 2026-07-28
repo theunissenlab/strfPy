@@ -1,5 +1,4 @@
 # Dependencies - General Stuff
-import tempfile
 import numpy as np
 import os
 import matplotlib.pyplot as plt
@@ -1305,7 +1304,16 @@ def _fit_classic_strf(srData, strfLength, smooth_rt):
     modelParams['infoFreqCutoff'] = 100        # For the coherence-based Info calculation this is the frequency CutOff in Hz
     modelParams['infoWindowSize'] = 0.250      # Window size in s for the coherence estimate
     modelParams['TimeLagUnit'] = 'frame'       # Can be set to 'frame' or 'msec'
-    modelParams['outputPath'] = os.path.join(tempfile.gettempdir(), srData['UUID'])  # Temporary path to store the results
+    # Do not set modelParams['outputPath'] here: it used to be a fixed path
+    # keyed only by the NWB session UUID (tempfile.gettempdir()/srData['UUID']),
+    # which is the *same* directory for every unit processed from that
+    # session -- looping over many units (as process_unit/process_unit_nostrf
+    # callers typically do) writes every unit's direct-fit intermediate files
+    # into that one shared directory. Confirmed this causes real corruption
+    # (zipfile.BadZipFile reading back a previous/concurrent unit's
+    # strfResult_Tol*.npz) when units overlap or a prior run leaves stale
+    # files behind. Leaving outputPath unset lets trnDirectFit's own
+    # tempfile.mkdtemp() default give each call a fresh, unique directory.
     modelParams['TimeLag'] =  int(np.ceil(np.max(np.abs(modelParams['delays']))))
 
     # Run direct fit optimization on all of the data
