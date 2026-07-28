@@ -7,7 +7,7 @@ from scipy.signal import windows, fftconvolve
 from scipy.special import genlaguerre
 from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
-from sklearn.decomposition import PCA, IncrementalPCA
+from sklearn.decomposition import PCA
 from sklearn.linear_model import RidgeCV
 import pynwb as nwb
 import pickle
@@ -959,12 +959,12 @@ def generate_event_pca_feature(srData, event_types, feature, pca = None, npcs=20
                 "generate_event_pca_feature: no events found for feature '%s' "
                 "across any dataset -- cannot fit a PCA basis." % feature
             )
-        # PCA (batched or incremental) cannot fit more components than there
-        # are samples (or features). If this unit has fewer events than
-        # requested -- e.g. a short session or a unit with few detected
-        # onsets/offsets -- reduce npcs rather than crashing; everything
-        # downstream reads the actual fitted width (pca.n_components_ /
-        # the array shape) rather than assuming exactly `npcs`.
+        # PCA cannot fit more components than there are samples (or
+        # features). If this unit has fewer events than requested -- e.g. a
+        # short session or a unit with few detected onsets/offsets -- reduce
+        # npcs rather than crashing; everything downstream reads the actual
+        # fitted width (pca.n_components_ / the array shape) rather than
+        # assuming exactly `npcs`.
         npcs_fit = min(npcs, total_events, nfeats)
         if npcs_fit < npcs:
             print(
@@ -972,32 +972,12 @@ def generate_event_pca_feature(srData, event_types, feature, pca = None, npcs=20
                 "(requested npcs=%d); reducing to npcs=%d for this unit." % (total_events, feature, npcs, npcs_fit)
             )
 
-        # Stream the fit one dataset at a time instead of concatenating every
-        # event's window across the *entire* corpus into one dense array
-        # first -- that concatenation was the single largest transient
-        # allocation in segmented-model preprocessing (total_events x nfeats,
-        # where nfeats = respChunkLen x nFreqBins).
-        # IncrementalPCA only requires the *first* partial_fit batch to have
-        # at least npcs_fit samples, so buffer just enough leading datasets
-        # to clear that bar, then stream the rest one dataset at a time.
-        pca = IncrementalPCA(n_components=npcs_fit)
-        buffer = []
-        buffer_n = 0
-        for iSet in range(pairCount):
-            windows = dataset_windows(iSet)
-            if getattr(pca, "n_samples_seen_", 0) == 0:
-                buffer.append(windows)
-                buffer_n += windows.shape[0]
-                if buffer_n >= npcs_fit:
-                    pca.partial_fit(np.concatenate(buffer, axis=0))
-                    buffer = []
-                    buffer_n = 0
-            else:
-                pca.partial_fit(windows)
-        if buffer:
-            # Fewer than npcs_fit events across the *whole* corpus -- fall
-            # back to fitting on everything gathered (matches old behavior).
-            pca.partial_fit(np.concatenate(buffer, axis=0))
+        all_spect_windows = np.concatenate(
+            [dataset_windows(iSet) for iSet in range(pairCount)],
+            axis=0,
+        )
+        pca = PCA(n_components=npcs_fit)
+        pca.fit(all_spect_windows)
 
     # Calculate and store the PC coefficients. Use the PCA's actual fitted
     # width rather than the caller's requested `npcs`: they can differ (see
