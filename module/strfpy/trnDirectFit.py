@@ -129,9 +129,23 @@ def _trnDirectFit_impl(modelParams, globalDat):
                 # Subtracting the means here without changing globDat.
                 stim = globalDat['stim'][srRange, :] - stimAvg
 
-                # Skip the very short stims to perform the coherence.
+                # Skip stims too short for the coherence to be computed reliably.
+                # compute_coherence_mean splits the response into FFT windows of
+                # WinLength = round(respsamprate * infoWindowSize) samples with 50%
+                # overlap (winstep = WinLength - WinLength//2); df_mtchd_JN needs at
+                # least 2 such windows (nFFTChunks = round((nSamples-WinLength)/winstep))
+                # to compute a jackknifed coherence. infoWindowSize is a duration in
+                # seconds, not a sample count, so it must be converted before comparing
+                # against len(rresp) -- comparing them directly (as before) meant this
+                # check essentially never fired, letting short stims through:
+                # nFFTChunks==0 raises ZeroDivisionError in df_mtchd_JN, and
+                # nFFTChunks==1 silently produces NaN coherence, which poisons the
+                # entire infoSum for that tolerance/sparseness combination.
                 rresp = globalDat['resp'][srRange]
-                if (len(rresp) < modelParams['infoWindowSize']) or not np.any(rresp):
+                winLength = round(modelParams['respsamprate'] * modelParams['infoWindowSize'])
+                winstep = winLength - winLength // 2
+                minSamplesForCoherence = winLength + 2 * winstep
+                if (len(rresp) < minSamplesForCoherence) or not np.any(rresp):
                     continue
 
                 gindx = np.ones((1, stim.shape[0]))
