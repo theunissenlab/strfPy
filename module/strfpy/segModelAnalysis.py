@@ -17,7 +17,11 @@ def reconstruct_dogs_rf(model, pca, feat_shape, nDOGS=5):
     DOGS temporal order for a given event type and projecting back through
     the PCA basis gives a single receptive-field image per event type, in
     the same axes as the raw event-triggered feature windows (e.g.
-    spect_windows: frequency x time-before-event).
+    spect_windows: frequency x time-relative-to-event, where sample index 0
+    is `segmentBuffer` ms before the event and the window continues to
+    `respChunkLen - segmentBuffer` ms after it -- see the `spect_inds`
+    construction in calcSegmentedModel.preprocess_srData. The window is
+    mostly post-event, not pre-event).
 
     Parameters
     ----------
