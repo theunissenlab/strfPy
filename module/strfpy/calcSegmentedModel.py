@@ -615,19 +615,21 @@ def generate_pred_score(
 # preproc function
 
 
-def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, tdelta=0, plotFlg = False, seg_spec_lookup=None, smWindow=31, derivativeThresh=0.5):
+def preprocess_srData(srData, respChunkLen=150, segmentBuffer=25, tdelta=0, plotFlg = -1, plotDir = '/Users/frederictheunissen/Desktop/', plotXlim = None, seg_spec_lookup=None, smWindow=31, derivativeThresh=0.5):
     """
     Preprocesses stimulus-response data by segmenting the stimulus based on its envelope, calculating the spectrogram,
     PSTH (Peri-Stimulus Time Histogram), and MPS (Modulation Power Spectrum).
     Parameters:
     srData (dict): Dictionary containing stimulus-response data.
-    plot (bool, optional): If True, plots the results. Default is False.
+    plotFlg (int, optional): If -1, no plots. if >=0 a single plot is generated for that stimulus-response pair. Default is -1.
+    plotDir (str, optional): Directory where plots will be saved. Default is '/Users/frederictheunissen/Desktop/'.
     respChunkLen (int, optional): Total chunk length (including segment buffer) in number of points. Default is 150.
     segmentBuffer (int, optional): Number of points on each side of segment for response and MPS. Default is 25.
     tdelta (int, optional): Time delta to offset the events. Default is 0.
     seg_spec_lookup (dict, optional): Dictionary containing the spectrogram for each stimulus to be used for segmentation
     smWindow (int, optional): Size of the smoothing window used to get a smoothed PSTH
     derivativeThresh (float, optional): Threshold derivative in dB per ms for segmentation. Default is 0.5.
+    plotXlim (tuple, optional): X-axis limits for the plots. Default is None.
     Returns:
     None: The function modifies the srData dictionary in place, adding preprocessed data to it.
     """
@@ -810,7 +812,7 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
                 srData["datasets"][iSet]["resp"]["psth"], wHann, mode="same"
             )
 
-        if plotFlg and (iSet == 3):
+        if (iSet == plotFlg):
             plt.figure(figsize=(8, 2), dpi=100)
             # plt.plot(ampdev)
 
@@ -836,16 +838,21 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
 
             for soundEnd in troughInd:
                 plt.plot([soundEnd, soundEnd], [0, -np.max(ampdev) * 1.1], "b")
-            xlim = plt.xlim()
-            xlim = (0, 1000)
+
+            if plotXlim is not None:
+                xlim = plotXlim
+            else:
+                xlim = plt.xlim()
             plt.xlim(xlim)
+
+
             plt.subplot(2, 1, 2)
             plt.plot(ampdev)
             plt.axhline(derivativeThresh, color="k")
             plt.axhline(-derivativeThresh, color="k")
             plt.ylim((derivativeThresh*-5.0, derivativeThresh*5.0))
             plt.xlim(xlim)
-            plt.savefig("/Users/frederictheunissen/Desktop/spect_derivative_example.eps", dpi=300, bbox_inches="tight")
+            plt.savefig(plotDir + f"spect_derivative_example_{iSet}.eps", dpi=300, bbox_inches="tight")
             plt.show()
             plt.close()
 
@@ -867,7 +874,7 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
                 
                 plt.imshow(events['spect_windows'][iEvent,:,:], aspect="auto", cmap=cmap, origin="lower")
                 plt.axis('off')
-            plt.savefig("/Users/frederictheunissen/Desktop/segmentation_features_example.eps", dpi=300, bbox_inches="tight")
+            plt.savefig(plotDir + f"segmentation_features_example_{iSet}.eps", dpi=300, bbox_inches="tight")
             plt.show()
             plt.close()
 
