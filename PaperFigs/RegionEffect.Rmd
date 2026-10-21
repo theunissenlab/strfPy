@@ -1,0 +1,42 @@
+---
+title: "Testing Mixed Effect in R vs Python"
+output: html_notebook
+---
+
+ 
+
+```{R Load Data}
+library('reticulate')
+py_install("pandas")
+pd <- import("pandas")
+
+# Load the file using the pandas read_pickle method
+summaryData <- pd$read_pickle('/users/frederictheunissen/Desktop/summary_stats.pkl')
+
+summary(summaryData)
+```
+
+```{R Select Data}
+information_threshold = 6.0 # in bits/s
+snr_threshold = 0.0 # unitless
+rate_threshold = 1.0 # average evoked rate in spikes/s
+data_size_threshold = 2000 # Requiring at leat 2000 spikes.
+
+summaryData$Auditory <- (summaryData$snr > snr_threshold) & (summaryData$cumInfo > information_threshold) & (summaryData$rate > rate_threshold) & (summaryData$rate*summaryData$data_length/1000 > data_size_threshold)
+
+r2_threshold = 0.2
+summaryData$Modeled = ( (summaryData$r2segId/summaryData$r2Ceil) > r2_threshold) & summaryData$Auditory
+
+``` 
+
+``` {R Mixed Effect}
+library(lme4)
+
+full_model <- lmer('(r2Seg/r2segId) ~ unit_type*brain_area + (1|bird)', data = summaryData, subset = summaryData$Modeled, REML = FALSE)
+null_model <- lmer('(r2Seg/r2segId) ~ unit_type + (1|bird)', data = summaryData, subset = summaryData$Modeled, REML = FALSE)
+
+summary(full_model)
+summary(null_model)
+
+anova(full_model, null_model)
+```
