@@ -1183,6 +1183,10 @@ store_error = False):
 
     R2CV = np.zeros(ranktol.shape[0])
 
+    # Leave-one-out errors for each tolerance - only the one at the best tolerance is stored in srData
+    if (store_error):
+        errorsCV = [[None]*nSets for _ in range(ranktol.shape[0])]
+
     for it, tolval in enumerate(ranktol):
 
         simple_sum_yy = 0
@@ -1191,7 +1195,7 @@ store_error = False):
         simple_sum_count = 0
 
         for iS, iSet in enumerate(pair_train_set):
-            
+
             if (kernel == 'Kernel'):
                 diagCxx = np.diag(np.diag(np.squeeze(Cxx[iS,:,:])))
                 Cxx_inv = nearDiagInv_optim(diagCxx, u[iS,:,:], s[iS,:], v[iS,:,:], tol=tolval)
@@ -1230,9 +1234,13 @@ store_error = False):
             # Get the prediciton
             ypred = hJN[iS, :]@ (x - xavg[iS]) + yavg[iS]
 
-            # Store it if asked
+            # Keep the error if asked
             if (store_error):
-                pair['resp']['error_%s' % kernel] = y - ypred
+                errorsCV[it][iS] = y - ypred
+
+            # Skip stimuli with no spikes in the R2 calculation (as in trnDirectFit)
+            if not np.any(pair['resp']['psth']):
+                continue
 
             if (y_R2feature is None):
                 yr2 = y
@@ -1271,6 +1279,11 @@ store_error = False):
     segModel['R2CV'] = R2CV
     if ( (itMax == 0) | (itMax == len(tol)-1 )):
         print('fit_seg() warning: Max prediction found for %f. Extend range of tolerance values' % tol[itMax])
+
+    # Store the leave-one-out error obtained at the best tolerance
+    if (store_error):
+        for iS, iSet in enumerate(pair_train_set):
+            srData["datasets"][iSet]['resp']['error_%s' % kernel] = errorsCV[itMax][iS]
 
     # Calculate one filter at the best tolerance
     CxxAll /= countAll
@@ -1907,7 +1920,7 @@ def process_unit(nwb_file, unit_name, model_dir=None, trials_type='playback_tria
 
     # Calculate spectrogram, smooth psth and make a new object the stimulus-response Data: srData
     srData = preprocSound.preprocess_sound_nwb(nwb_file, trials_type, unit_name, preprocess_type='ft')
-    preprocess_srData(srData, plot=False, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = False, derivativeThresh=0.3)
+    preprocess_srData(srData, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = -1, derivativeThresh=0.3)
 
     # Estimate the single trial SNR for this data set
     snrEst, f, snrEstf, cumInfo, totWeight  = preprocSound.estimate_SNR(srData)
@@ -2017,7 +2030,7 @@ def process_unit(nwb_file, unit_name, model_dir=None, trials_type='playback_tria
         'r2segIDModelLG' : r2segIDModelLG,
         'r2segIDModelDG' : r2segIDModelDG,
         'r2segIDModelLGMPS' : r2segIDModelLGMPS,
-        'r2segIDModelDG' : r2segIDModelDGMPS,
+        'r2segIDModelDGMPS' : r2segIDModelDGMPS,
         'r2STRF' : r2STRF
     }
     
@@ -2120,7 +2133,7 @@ def process_unit_nostrf(nwb_file, unit_name, model_dir=None, trials_type='playba
         'r2segIDModelLG' : r2segIDModelLG,
         'r2segIDModelDG' : r2segIDModelDG,
         'r2segIDModelLGMPS' : r2segIDModelLGMPS,
-        'r2segIDModelDG' : r2segIDModelDGMPS,
+        'r2segIDModelDGMPS' : r2segIDModelDGMPS,
     }
     
     return result
