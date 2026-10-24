@@ -177,9 +177,10 @@ def _trnDirectFit_impl(modelParams, globalDat):
                 sum_y = np.sum(y*yw)
                 sum_yy = np.sum(y*y*yw)
 
-                # For this R2 - rectify the prediction
-                mresp[mresp<0.0] = 0.0
-                sum_error2 = np.sum(((mresp-y)**2)*yw)
+                # For this R2 - smooth the prediction with the same window as the response, then rectify
+                mresp_smooth = np.convolve(np.real(mresp).ravel(), wHann, mode="same")
+                mresp_smooth[mresp_smooth<0.0] = 0.0
+                sum_error2 = np.sum(((mresp_smooth-y)**2)*yw)
 
                 simple_sum_yy += sum_yy
                 simple_sum_y +=  sum_y

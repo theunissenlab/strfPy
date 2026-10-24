@@ -575,19 +575,21 @@ def generate_pred_score(
 # preproc function
 
 
-def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, tdelta=0, plotFlg = False, seg_spec_lookup=None, smWindow=31, derivativeThresh=0.5):
+def preprocess_srData(srData, respChunkLen=150, segmentBuffer=25, tdelta=0, plotFlg = -1, plotDir = '/Users/frederictheunissen/Desktop/', plotXlim = None, seg_spec_lookup=None, smWindow=31, derivativeThresh=0.5):
     """
     Preprocesses stimulus-response data by segmenting the stimulus based on its envelope, calculating the spectrogram,
     PSTH (Peri-Stimulus Time Histogram), and MPS (Modulation Power Spectrum).
     Parameters:
     srData (dict): Dictionary containing stimulus-response data.
-    plot (bool, optional): If True, plots the results. Default is False.
+    plotFlg (int, optional): If -1, no plots. if >=0 a single plot is generated for that stimulus-response pair. Default is -1.
+    plotDir (str, optional): Directory where plots will be saved. Default is '/Users/frederictheunissen/Desktop/'.
     respChunkLen (int, optional): Total chunk length (including segment buffer) in number of points. Default is 150.
     segmentBuffer (int, optional): Number of points on each side of segment for response and MPS. Default is 25.
     tdelta (int, optional): Time delta to offset the events. Default is 0.
     seg_spec_lookup (dict, optional): Dictionary containing the spectrogram for each stimulus to be used for segmentation
     smWindow (int, optional): Size of the smoothing window used to get a smoothed PSTH
     derivativeThresh (float, optional): Threshold derivative in dB per ms for segmentation. Default is 0.5.
+    plotXlim (tuple, optional): X-axis limits for the plots. Default is None.
     Returns:
     None: The function modifies the srData dictionary in place, adding preprocessed data to it.
     """
@@ -770,7 +772,7 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
                 srData["datasets"][iSet]["resp"]["psth"], wHann, mode="same"
             )
 
-        if plotFlg:
+        if (iSet == plotFlg):
             plt.figure(figsize=(8, 2), dpi=100)
             # plt.plot(ampdev)
 
@@ -796,13 +798,23 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
 
             for soundEnd in troughInd:
                 plt.plot([soundEnd, soundEnd], [0, -np.max(ampdev) * 1.1], "b")
-            xlim = plt.xlim()
+
+            if plotXlim is not None:
+                xlim = plotXlim
+            else:
+                xlim = plt.xlim()
+            plt.xlim(xlim)
+
+
             plt.subplot(2, 1, 2)
             plt.plot(ampdev)
             plt.axhline(derivativeThresh, color="k")
             plt.axhline(-derivativeThresh, color="k")
-            plt.ylim((derivativeThresh*-3.0, derivativeThresh*3.0))
+            plt.ylim((derivativeThresh*-5.0, derivativeThresh*5.0))
             plt.xlim(xlim)
+            plt.savefig(plotDir + f"spect_derivative_example_{iSet}.eps", dpi=300, bbox_inches="tight")
+            plt.show()
+            plt.close()
 
             plt.figure(figsize=(16, 2), dpi=100)
             nEvents = events["index"].shape[0]
@@ -822,6 +834,9 @@ def preprocess_srData(srData, plot=False, respChunkLen=150, segmentBuffer=25, td
                 
                 plt.imshow(events['spect_windows'][iEvent,:,:], aspect="auto", cmap=cmap, origin="lower")
                 plt.axis('off')
+            plt.savefig(plotDir + f"segmentation_features_example_{iSet}.eps", dpi=300, bbox_inches="tight")
+            plt.show()
+            plt.close()
 
 
     # lets generate zero-mean mps
@@ -1161,6 +1176,10 @@ store_error = False):
     simple_sum_count = np.zeros(n_tol)
     is_mat = np.zeros((nb, nb))
 
+    # Leave-one-out errors for each tolerance - only the one at the best tolerance is stored in srData
+    if (store_error):
+        errorsCV = [[None]*nSets for _ in range(n_tol)]
+
     for iS, iSet in enumerate(pair_train_set):
         x, y, yw = _get_xyw(iSet)
         pair = srData["datasets"][iSet]
@@ -1190,9 +1209,13 @@ store_error = False):
             # Get the prediciton
             ypred = hJN_iS @ (x - xavg[iS]) + yavg[iS]
 
-            # Store it if asked
+            # Keep the error if asked
             if (store_error):
-                pair['resp']['error_%s' % kernel] = y - ypred
+                errorsCV[it][iS] = y - ypred
+
+            # Skip stimuli with no spikes in the R2 calculation (as in trnDirectFit)
+            if not np.any(pair['resp']['psth']):
+                continue
 
             if (y_R2feature is None):
                 yr2 = y
@@ -1225,6 +1248,11 @@ store_error = False):
     segModel['R2CV'] = R2CV
     if ( (itMax == 0) | (itMax == len(tol)-1 )):
         print('fit_seg() warning: Max prediction found for %f. Extend range of tolerance values' % tol[itMax])
+
+    # Store the leave-one-out error obtained at the best tolerance
+    if (store_error):
+        for iS, iSet in enumerate(pair_train_set):
+            srData["datasets"][iSet]['resp']['error_%s' % kernel] = errorsCV[itMax][iS]
 
     # Calculate one filter at the best tolerance
     CxxAll /= countAll
@@ -1355,7 +1383,7 @@ def process_unit_strf(nwb_file, unit_name, model_dir=None, trials_type='playback
 
     # Calculate spectrogram, smooth psth and make a new object the stimulus-response Data: srData
     srData = preprocSound.preprocess_sound_nwb(nwb_file, trials_type, unit_name, preprocess_type='ft')
-    preprocess_srData(srData, plot=False, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = False)
+    preprocess_srData(srData, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = -1)
 
     # Estimate the single trial SNR for this data set and its EV (R2 ceiling)
     snrEst, _f, _snrEstf, _cumInfo, _totWeight, EV = _compute_snr_and_EV(srData)
@@ -1400,7 +1428,7 @@ def process_unit(nwb_file, unit_name, model_dir=None, trials_type='playback_tria
 
     # Calculate spectrogram, smooth psth and make a new object the stimulus-response Data: srData
     srData = preprocSound.preprocess_sound_nwb(nwb_file, trials_type, unit_name, preprocess_type='ft')
-    preprocess_srData(srData, plot=False, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = False, derivativeThresh=0.3)
+    preprocess_srData(srData, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = -1, derivativeThresh=0.3)
 
     # Estimate the single trial SNR for this data set and its EV (R2 ceiling)
     snrEst, f, snrEstf, cumInfo, totWeight, EV = _compute_snr_and_EV(srData)
@@ -1487,7 +1515,7 @@ def process_unit_nostrf(nwb_file, unit_name, model_dir=None, trials_type='playba
 
     # Calculate spectrogram, smooth psth and make a new object the stimulus-response Data: srData
     srData = preprocSound.preprocess_sound_nwb(nwb_file, trials_type, unit_name, preprocess_type='ft')
-    preprocess_srData(srData, plot=False, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = False, derivativeThresh=0.3)
+    preprocess_srData(srData, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = -1, derivativeThresh=0.3)
 
     # Estimate the single trial SNR for this data set and its EV (R2 ceiling)
     snrEst, _f, _snrEstf, _cumInfo, _totWeight, EV = _compute_snr_and_EV(srData)
