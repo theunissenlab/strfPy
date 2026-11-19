@@ -1019,7 +1019,7 @@ def generate_event_pca_feature(srData, event_types, feature, pca = None, npcs=20
 # fitting funcitons
 def fit_seg(
     srData, nPoints, x_feature, y_feature = 'psth_smooth', y_R2feature = None, y_R2SingleTrialFeature = None, snrEst = 1.0, kernel = 'Kernel', basis_args = None, nD=2, pair_train_set=None, tol = np.array([0.2, 0.1, 0.05, 0.01, 0.005, 0.001, 0.0005, 0.0001, 0.00001, 0]),
-store_error = False):
+sparsenesses = None, store_error = False):
     """
     Fits a segmented model to the given data using ridge regresseion and leave one out cross-validation
     Parameters:
@@ -1035,9 +1035,14 @@ store_error = False):
     nD (int): The number of kernel functions for the convolutional models. 2 is the number for 'kernel', 5 is the number for 'DG' and 20 is a good option for 'LG' kernel.
     pair_train_set (list): List of dataset indices to use for training.
     tol: the ridge hyperparameter expressed as a scale of the stimulus auto-correlation
+    sparsenesses: list of nstd values used to shrink weights that are small relative to their jackknife std (see trnDirectFit.df_fast_filter_filter).
+                  0 is no shrinkage (default [0]). R2CV is then a 2D array (tolerance x sparseness) when more than one value is given.
+    store_error: stores the leave-one-out error at the best tolerance and sparseness in pair['resp']['error_<kernel>']
     Returns:
         segMpdel: The ridge regression model for segmentation/identification - currently a dictionary. To be maade into a class
     """
+    if sparsenesses is None:
+        sparsenesses = [0]
     if basis_args is None:
         basis_args = []
 
@@ -1137,102 +1142,103 @@ store_error = False):
     # 4. Calculate the ridge regression by hand.
 
     # 4a. Invert all auto-correlation matrices
-    u = np.zeros(Cxx.shape)
-    v = np.zeros(Cxx.shape)
     s = np.zeros(Cxy.shape)     # This is just the diagonal
     nb = Cxx.shape[1]
 
-    if ( kernel == 'Kernel' ):
+    if ( (kernel == 'Kernel') | (kernel == 'Kernel2') ):
+        u = np.zeros(Cxx.shape)
+        v = np.zeros(Cxx.shape)
         for iS in range(nSets):
-            diagCxx = np.diag(np.diag(np.squeeze(Cxx[iS,:,:])))
-            u[iS,:,:],s[iS,:],v[iS,:,:] = np.linalg.svd(Cxx[iS,:,:]-diagCxx)
+            if ( kernel == 'Kernel' ):
+                diagCxx = np.diag(np.diag(np.squeeze(Cxx[iS,:,:])))
+                u[iS,:,:],s[iS,:],v[iS,:,:] = np.linalg.svd(Cxx[iS,:,:]-diagCxx)
+            else:
+                u[iS,:,:],s[iS,:],v[iS,:,:] = np.linalg.svd(Cxx[iS,:,:])
     else:
-        # Cxx is symmetric PSD by construction. eigh gives a single,
-        # self-consistent eigenbasis (eigenvectors reused in `u`, `v` left
-        # unused for this branch) -- unlike SVD, whose independently
-        # computed u and v are only guaranteed consistent for
-        # well-conditioned matrices with distinct singular values. Inside
-        # a near-degenerate subspace (common here: 'LG'/'DG' fits can have
-        # nD*nFeatures in the hundreds, easily exceeding the data's actual
-        # degrees of freedom) SVD's u and v can be unrelated arbitrary
-        # bases for that subspace, since a near-zero singular value makes
-        # their product vanish regardless of what they are -- verified
-        # against a direct linear solve that both `u @ is_mat @ v` and the
-        # textbook `v.T @ is_mat @ u.T` become unreliable there, while
-        # eigh stays accurate. eigh is also ~1.5-1.7x faster than svd at
-        # these matrix sizes since it only computes one orthogonal factor.
+        # Cxx is symmetric, so its SVD is given by its eigen decomposition Cxx = U diag(lambda) U.T: the singular values are |lambda|,
+        # u = U and v = sign(lambda) U.T.  The eigenvectors overwrite Cxx (no longer needed) so that we do not store separate u and v arrays -
+        # this divides the memory by 3, which matters for large feature spaces (e.g. nb = 25 Laguerre x 2 events x 100 PCs = 5000).
+        # Using eigh (one orthogonal factor) rather than svd also keeps u and v consistent with each other: svd computes them
+        # independently, and inside a near-degenerate subspace (common here, since nb can exceed the data's degrees of freedom)
+        # they can be unrelated bases, which made `u @ is_mat @ v` unreliable.
+        signLambda = np.zeros(Cxy.shape)
         for iS in range(nSets):
-            s[iS,:], u[iS,:,:] = np.linalg.eigh(Cxx[iS,:,:])
+            lambdas, Cxx[iS,:,:] = np.linalg.eigh(Cxx[iS,:,:])
+            s[iS,:] = np.abs(lambdas)
+            signLambda[iS,:] = np.sign(lambdas)
 
-    # 4b. Sweep tolerance values, computing leave-one-out R2CV at each.
-    # Looping stimulus-outer/tolerance-inner (rather than the reverse, as
-    # this used to) means x/y/yw are (re)computed once per stimulus and
-    # reused across every tolerance value in the sweep, instead of needing
-    # every stimulus's x cached simultaneously for the whole sweep.
-    n_tol = ranktol.shape[0]
-    simple_sum_yy = np.zeros(n_tol)
-    simple_sum_y = np.zeros(n_tol)
-    simple_sum_error = np.zeros(n_tol)
-    simple_sum_count = np.zeros(n_tol)
-    is_mat = np.zeros((nb, nb))
+    nTol = ranktol.shape[0]
+    nSp = len(sparsenesses)
 
-    # Leave-one-out errors for each tolerance - only the one at the best tolerance is stored in srData
-    if (store_error):
-        errorsCV = [[None]*nSets for _ in range(n_tol)]
+    # 4b. Leave-one-out weights for every tolerance.  These are small (nTol x nSets x nb), so they are all computed before the
+    #     predictions: the jackknife std below needs every set's weights at a given tolerance.
+    hJN = np.zeros((nTol, nSets, nb))
+    for it, tolval in enumerate(ranktol):
+        for iS in range(nSets):
+            if (kernel == 'Kernel'):
+                diagCxx = np.diag(np.diag(np.squeeze(Cxx[iS,:,:])))
+                Cxx_inv = nearDiagInv_optim(diagCxx, u[iS,:,:], s[iS,:], v[iS,:,:], tol=tolval)
+                hJN[it, iS, :] = Cxx_inv @ Cxy[iS,:]
+            elif (kernel == 'Kernel2'):
+                diagCxx = np.diag(np.diag(np.squeeze(Cxx[iS,:,:])))
+                Cxx_inv = nearDiagInv2(np.squeeze(Cxx[iS,:,:]), diagCxx,  tol=tolval)
+                hJN[it, iS, :] = Cxx_inv @ Cxy[iS,:]
+            else:
+                # ridge regression - regularized normal equation: hJN = u @ diag(1/(s+tol)) @ v @ Cxy with u = U and v = sign(lambda) U.T
+                hJN[it, iS, :] = Cxx[iS, :, :] @ (signLambda[iS,:]*(Cxx[iS, :, :].T @ Cxy[iS,:])/(s[iS,:] + tolval))
+
+    # 4c. Jackknife standard error of the weights for each leave-one-out set, obtained from the other nSets-1 estimates
+    #     (as for strfHJN_std in calcStrf.df_cal_Strf).  Note that these other estimates were obtained with data from the held out set.
+    hJN_std = np.zeros(hJN.shape)
+    if nSets > 2:
+        for it in range(nTol):
+            for iS in range(nSets):
+                hJN_std[it, iS, :] = np.std(np.delete(hJN[it], iS, axis=0), axis=0)*np.sqrt(nSets-2)
+    hJN_stdMean = np.mean(hJN_std, axis=1)   # (nTol x nb) average JN std of the weights at each tolerance - used for the final model
+
+    # 4d. Predictions for the held out sets after shrinking the weights that are small relative to their JN std (as in trnDirectFit).
+    #     Looping stimulus-outer means each stimulus's x (nD*nFeatures x T, the large array here) is generated once and reused across
+    #     every tolerance and sparseness value, rather than caching every stimulus's x for the whole sweep.
+    simple_sum_yy = np.zeros((nTol, nSp))
+    simple_sum_y = np.zeros((nTol, nSp))
+    simple_sum_error = np.zeros((nTol, nSp))
+    simple_sum_count = np.zeros((nTol, nSp))
+
+    def _predict(x, y, iS, pair, it, nstd):
+        hSparse = trnDirectFit.df_fast_filter_filter(hJN[it, iS, :], hJN_std[it, iS, :], nstd)
+        return hSparse @ x - hSparse @ xavg[iS] + yavg[iS]
 
     for iS, iSet in enumerate(pair_train_set):
         x, y, yw = _get_xyw(iSet)
         pair = srData["datasets"][iSet]
 
-        for it, tolval in enumerate(ranktol):
+        # Skip stimuli with no spikes in the R2 calculation (as in trnDirectFit)
+        if not np.any(pair['resp']['psth']):
+            continue
 
-            if (kernel == 'Kernel'):
-                diagCxx = np.diag(np.diag(np.squeeze(Cxx[iS,:,:])))
-                Cxx_inv = nearDiagInv_optim(diagCxx, u[iS,:,:], s[iS,:], v[iS,:,:], tol=tolval)
-                hJN_iS = Cxx_inv @ Cxy[iS,:]
-            elif (kernel == 'Kernel2'):
-                diagCxx = np.diag(np.diag(np.squeeze(Cxx[iS,:,:])))
-                Cxx_inv = nearDiagInv2(np.squeeze(Cxx[iS,:,:]), diagCxx,  tol=tolval)
-                hJN_iS = Cxx_inv @ Cxy[iS,:]
-            else:
-                # ridge regression - regularized normal equation, via the
-                # eigenbasis computed above (Cxx = u diag(s) u.T exactly,
-                # so this is the exact regularized inverse, not an
-                # approximation that depends on SVD's u/v staying
-                # consistent).
-                # (only the diagonal of is_mat is ever written -- reused
-                # across iterations rather than reallocated each time)
-                for ii in range(nb):
-                    is_mat[ii,ii] = 1.0/(s[iS, ii] + tolval)
-                hJN_iS = u[iS, :, :] @ is_mat @ (u[iS, :, :].T @ Cxy[iS,:])
+        if (y_R2feature is not None):
+            yr2_feat = pair['resp'][y_R2feature][0:len(y)]
+            if truncate_zero_weight:
+                yr2_feat = yr2_feat[yw>0]
 
-            # Get the prediciton
-            ypred = hJN_iS @ (x - xavg[iS]) + yavg[iS]
+        for it in range(nTol):
+            for iq, nstd in enumerate(sparsenesses):
+                ypred = _predict(x, y, iS, pair, it, nstd)
 
-            # Keep the error if asked
-            if (store_error):
-                errorsCV[it][iS] = y - ypred
+                if (y_R2feature is None):
+                    yr2 = y
+                else:
+                    yr2 = yr2_feat
+                    ypred += (yr2 - y)
 
-            # Skip stimuli with no spikes in the R2 calculation (as in trnDirectFit)
-            if not np.any(pair['resp']['psth']):
-                continue
+                # Rectify - this should be a flag
+                ypred[ypred<0] = 0
 
-            if (y_R2feature is None):
-                yr2 = y
-            else:
-                yr2 = pair['resp'][y_R2feature][0:len(y)]
-                if truncate_zero_weight:
-                    yr2 = yr2[yw>0]
-                ypred = ypred + (yr2 - y)
-
-            # Rectify - this should be a flag
-            ypred[ypred<0] = 0
-
-            # Get values to calculate R2-CV - here it is the coefficient of determination
-            simple_sum_count[it] += np.sum(yw)
-            simple_sum_y[it] += np.sum(yr2*yw)
-            simple_sum_yy[it] += np.sum(yr2*yr2*yw)
-            simple_sum_error[it] += np.sum(((ypred-yr2)**2)*yw)
+                # Get values to calculate R2-CV - here it is the coefficient of determination
+                simple_sum_count[it, iq] += np.sum(yw)
+                simple_sum_y[it, iq] += np.sum(yr2*yw)
+                simple_sum_yy[it, iq] += np.sum(yr2*yr2*yw)
+                simple_sum_error[it, iq] += np.sum(((ypred-yr2)**2)*yw)
 
     y_mean = simple_sum_y/simple_sum_count
     y_var = simple_sum_yy/simple_sum_count - y_mean**2
@@ -1241,18 +1247,24 @@ store_error = False):
     # This is not a "one-trial" CV
     R2CV = 1.0 - y_error/y_var
 
-    # Find the best tolerance level, i.e. the ridge penalty hyper-parameter
+    # Find the best tolerance level, i.e. the ridge penalty hyper-parameter, and the best sparseness
     segModel = {}
-    itMax = np.argmax(R2CV)
+    itMax, iqMax = np.unravel_index(np.argmax(R2CV), R2CV.shape)
     segModel['Tol'] = tol
-    segModel['R2CV'] = R2CV
+    segModel['sparsenesses'] = np.array(sparsenesses)
+    segModel['R2CV'] = R2CV if nSp > 1 else R2CV[:, 0]    # R2CV[it, iq] for tolerance it and sparseness iq
+    segModel['bestTol'] = tol[itMax]
+    segModel['bestSparseness'] = sparsenesses[iqMax]
     if ( (itMax == 0) | (itMax == len(tol)-1 )):
         print('fit_seg() warning: Max prediction found for %f. Extend range of tolerance values' % tol[itMax])
 
-    # Store the leave-one-out error obtained at the best tolerance
+    # Store the leave-one-out error obtained at the best tolerance and sparseness (one extra pass, so that the errors for
+    # every tolerance/sparseness combination never need to be held at once).  All sets are stored, including those with no spikes.
     if (store_error):
         for iS, iSet in enumerate(pair_train_set):
-            srData["datasets"][iSet]['resp']['error_%s' % kernel] = errorsCV[itMax][iS]
+            x, y, yw = _get_xyw(iSet)
+            pair = srData["datasets"][iSet]
+            srData["datasets"][iSet]['resp']['error_%s' % kernel] = y - _predict(x, y, iS, pair, itMax, sparsenesses[iqMax])
 
     # Calculate one filter at the best tolerance
     CxxAll /= countAll
@@ -1267,11 +1279,12 @@ store_error = False):
         CxxAll_inv = nearDiagInv2(np.squeeze(CxxAll), diagCxx, tol=ranktol[itMax])
         hJNAll = CxxAll_inv @ CxyAll
     else:
-        # See the matching fix/comment in the per-stimulus branch above.
-        sAll, uAll = np.linalg.eigh(CxxAll)
-        for ii in range(nb):
-            is_mat[ii,ii] = 1.0/(sAll[ii] + ranktol[itMax])
-        hJNAll = uAll @ is_mat @ (uAll.T @ CxyAll)
+        # Same eigen decomposition form as the leave-one-out weights above (CxxAll is returned below, so it is not overwritten)
+        lambdasAll, UAll = np.linalg.eigh(CxxAll)
+        hJNAll = UAll @ (np.sign(lambdasAll)*(UAll.T @ CxyAll)/(np.abs(lambdasAll) + ranktol[itMax]))
+
+    # And apply the sparseness at the best value using the average JN std (as for the STRF in trnDirectFit)
+    hJNAll = trnDirectFit.df_fast_filter_filter(hJNAll, hJN_stdMean[itMax,:], sparsenesses[iqMax])
 
     # The bias term
     b0 = -hJNAll @ (xsumAll/countAll) + (ysumAll/countAll)
@@ -1305,7 +1318,7 @@ def _compute_snr_and_EV(srData):
     return snrEst, f, snrEstf, cumInfo, totWeight, EV
 
 
-def _fit_classic_strf(srData, strfLength, smooth_rt):
+def _fit_classic_strf(srData, strfLength, smooth_rt, sparsenesses=None):
     """Shared by process_unit_strf/process_unit: fit the classic linear
     STRF via direct-fit on the full srData, and return the fitted
     modelParams plus its best (max) cross-validated R2.
@@ -1321,7 +1334,9 @@ def _fit_classic_strf(srData, strfLength, smooth_rt):
 
     # Additional model options
     modelParams['Tol_val'] = [0.100, 0.050, 0.010, 0.005, 1e-03, 1e-04, 5e-05, 0]  # These are the same as the default in fit_seg
-    modelParams['sparsenesses'] = [0, 1, 2, 3, 4, 5, 6, 7]   # The sparseness is a lasso like regularization
+    if sparsenesses is None:
+        sparsenesses = [0, 1, 2, 3, 4, 5, 6, 7]
+    modelParams['sparsenesses'] = sparsenesses   # The sparseness is a lasso like regularization
     modelParams['timevary_PSTH'] = 0           # This is to calculate a time-varying mean across all stim
     modelParams['smooth_rt'] = smooth_rt
     modelParams['ampsamprate'] = srData['stimSampleRate']
@@ -1403,7 +1418,7 @@ def process_unit_strf(nwb_file, unit_name, model_dir=None, trials_type='playback
 
     return result
 
-def process_unit(nwb_file, unit_name, model_dir=None, trials_type='playback_trials'):
+def process_unit(nwb_file, unit_name, model_dir=None, trials_type='playback_trials', segmentBuffer=30, nPCs=50):
     ''' Fits using ridge or modified ridge 4 encoding models using the data structure in srData.  The four encoding models are:
             a segmentation model,
             a segmenation + identification using LG expansion
@@ -1414,16 +1429,17 @@ def process_unit(nwb_file, unit_name, model_dir=None, trials_type='playback_tria
 
     # Segmentation and fit parameters - this could be a dictionary of options
     respChunkLen = 100 # ms of stim to use in each chunk of feature space
-    segmentBuffer = 30 # ms to add at the beginning of each segment
+    # segmentBuffer (argument, default 30): ms of stimulus before each event included in the spectrogram window (window spans -segmentBuffer to respChunkLen-segmentBuffer ms)
     nLaguerre = 25 # number of laguerre functions to use
     feature = 'spect_windows'
     feature2 = 'mps_windows'
     event_types = 'onoff_feature'
     nPoints = 150 # number of points to use in the kernel
     strfLength = 200 # number of points in the STRF in sampling rate - 200 ms for Theunissen data
-    nPCs = 20
+    # nPCs (argument, default 50): number of PCs of the spect_windows and mps_windows features used by the seg+ID models
     nDOGS = 5
     smooth_rt = 31 # smoothing window for the R2 calculation for the strf.  The segmented model is also fitted on a smooth_psth with the same time window.
+    sparsenesses = [0, 1, 2, 3, 4, 5, 6, 7]   # The sparseness (nstd in df_fast_filter_filter) values used for both the STRF and the seg+ID models
     all_models = dict()
 
     # Calculate spectrogram, smooth psth and make a new object the stimulus-response Data: srData
@@ -1450,23 +1466,28 @@ def process_unit(nwb_file, unit_name, model_dir=None, trials_type='playback_tria
     all_models['pca_mps'] = pca_mps
 
     # Calculate the segmented encoding models for spectrograms, LGs and DOGS.
-    segIDModelLG = fit_seg(srData, nPoints, feature, y_feature = 'error_Kernel0', y_R2feature = 'psth_smooth', kernel = 'LG', basis_args =laguerre_args, nD=nLaguerre) 
+    segIDModelLG = fit_seg(srData, nPoints, feature, y_feature = 'error_Kernel0', y_R2feature = 'psth_smooth', kernel = 'LG', basis_args =laguerre_args, nD=nLaguerre, sparsenesses=sparsenesses)
     r2segIDModelLG = np.max(segIDModelLG['R2CV'])
-    segIDModelDG = fit_seg(srData, nPoints, feature, y_feature = 'error_Kernel0', y_R2feature = 'psth_smooth', kernel = 'DG', basis_args =DOGS_args, nD=nDOGS)
+    r2segIDModelLG0 = np.max(segIDModelLG['R2CV'][:,0])    # Without sparseness
+    segIDModelDG = fit_seg(srData, nPoints, feature, y_feature = 'error_Kernel0', y_R2feature = 'psth_smooth', kernel = 'DG', basis_args =DOGS_args, nD=nDOGS, sparsenesses=sparsenesses)
     r2segIDModelDG = np.max(segIDModelDG['R2CV'])
+    r2segIDModelDG0 = np.max(segIDModelDG['R2CV'][:,0])
     all_models['segIDModelLG'] = segIDModelLG
     all_models['segIDModelDG'] = segIDModelDG
 
     # Repeat using the MPS
-    segIDModelLGMPS = fit_seg(srData, nPoints, feature2, y_feature = 'error_Kernel0', y_R2feature = 'psth_smooth', kernel = 'LG', basis_args =laguerre_args, nD=nLaguerre) 
+    segIDModelLGMPS = fit_seg(srData, nPoints, feature2, y_feature = 'error_Kernel0', y_R2feature = 'psth_smooth', kernel = 'LG', basis_args =laguerre_args, nD=nLaguerre, sparsenesses=sparsenesses)
     r2segIDModelLGMPS = np.max(segIDModelLGMPS['R2CV'])
-    segIDModelDGMPS = fit_seg(srData, nPoints, feature2, y_feature = 'error_Kernel0', y_R2feature = 'psth_smooth', kernel = 'DG', basis_args =DOGS_args, nD=nDOGS)
+    r2segIDModelLGMPS0 = np.max(segIDModelLGMPS['R2CV'][:,0])
+    segIDModelDGMPS = fit_seg(srData, nPoints, feature2, y_feature = 'error_Kernel0', y_R2feature = 'psth_smooth', kernel = 'DG', basis_args =DOGS_args, nD=nDOGS, sparsenesses=sparsenesses)
     r2segIDModelDGMPS = np.max(segIDModelDGMPS['R2CV'])
+    r2segIDModelDGMPS0 = np.max(segIDModelDGMPS['R2CV'][:,0])
     all_models['segIDModelLGMPS'] = segIDModelLGMPS
     all_models['segIDModelDGMPS'] = segIDModelDGMPS
 
     # The Classic STRF
-    modelParams, r2STRF = _fit_classic_strf(srData, strfLength, smooth_rt)
+    modelParams, r2STRF = _fit_classic_strf(srData, strfLength, smooth_rt, sparsenesses=sparsenesses)
+    r2STRF0 = modelParams['R2CV'][:,0].max()   # Without sparseness
     identifier = _resolve_identifier(nwb_file)
     all_models['strfModel'] = modelParams
 
@@ -1488,7 +1509,14 @@ def process_unit(nwb_file, unit_name, model_dir=None, trials_type='playback_tria
         'r2segIDModelDG' : r2segIDModelDG,
         'r2segIDModelLGMPS' : r2segIDModelLGMPS,
         'r2segIDModelDGMPS' : r2segIDModelDGMPS,
-        'r2STRF' : r2STRF
+        'r2STRF' : r2STRF,
+        'r2segIDModelLG0' : r2segIDModelLG0,
+        'r2segIDModelDG0' : r2segIDModelDG0,
+        'r2segIDModelLGMPS0' : r2segIDModelLGMPS0,
+        'r2segIDModelDGMPS0' : r2segIDModelDGMPS0,
+        'r2STRF0' : r2STRF0,
+        'segmentBuffer' : segmentBuffer,
+        'nPCs' : nPCs
     }
 
     return result
