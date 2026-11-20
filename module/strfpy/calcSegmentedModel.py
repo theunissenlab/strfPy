@@ -179,8 +179,18 @@ def fit_kernel_LG (learned_conv_kernel, nPoints, nD=2):
 
         kernel_mean  = np.mean(learned_conv_kernel[iEventType, :])
 
+        # Look for peaks and troughs in the learned kernel to get a starting point for the fit
         peakInd, peakVals = find_peaks( learned_conv_kernel[iEventType, minLat:] - kernel_mean, distance=minDist, height= (None, None) )
         troughInd, troughVals = find_peaks(-(learned_conv_kernel[iEventType, minLat:] - kernel_mean), distance=minDist, height= (None, None) )
+
+        # if there are no peaks use the maximum value of the kernel as the starting point
+        if (len(peakInd) == 0):
+            peakInd = [np.argmax(learned_conv_kernel[iEventType, minLat:] - kernel_mean)]
+            peakVals = {"peak_heights": [learned_conv_kernel[iEventType, minLat + peakInd[0]] - kernel_mean]}
+
+        if (len(troughInd) == 0):
+            troughInd = [np.argmin(learned_conv_kernel[iEventType, minLat:] - kernel_mean)]
+            troughVals = {"peak_heights": [-(learned_conv_kernel[iEventType, minLat + troughInd[0]] - kernel_mean)]}
 
         # Take the first of the two:
         if (peakInd[0] < troughInd[0]):
@@ -247,18 +257,22 @@ def fit_kernel_DG(learned_conv_kernel, nPoints, nD=2):
         tNeg = np.argmin(learned_conv_kernel[iEventType, :])
         sdPos = sdNeg = 20
         p0=[meanVal, ampPos, ampNeg, tPos, tNeg, sdPos, sdNeg]
-        popt, pcov = curve_fit(
-            dogs,
-            np.arange(nPoints),
-            learned_conv_kernel[iEventType, :],
-            p0=p0,
-            bounds=(
-            [np.min(learned_conv_kernel[iEventType, :]), 0, 0, 0, 0, 0, 0],
-            [np.max(learned_conv_kernel[iEventType, :]), np.inf, np.inf, nPoints, nPoints, nPoints, nPoints],
-            ),
-            method="trf",
-        )
-        basis_args[iEventType, :] = popt
+        try:
+            popt, pcov = curve_fit(
+                dogs,
+                np.arange(nPoints),
+                learned_conv_kernel[iEventType, :],
+                p0=p0,
+                bounds=(
+                [np.min(learned_conv_kernel[iEventType, :]), 0, 0, 0, 0, 0, 0],
+                [np.max(learned_conv_kernel[iEventType, :]), np.inf, np.inf, nPoints, nPoints, nPoints, nPoints],
+                ),
+                method="trf",
+            )
+            basis_args[iEventType, :] = popt
+        except RuntimeError:
+            basis_args[iEventType, :] = p0
+        
 
     return basis_args
 
@@ -1009,7 +1023,8 @@ def generate_event_pca_feature(srData, event_types, feature, pca = None, npcs=20
         ],
         axis=0,
         )
-        pca = PCA(n_components=npcs)
+        # Add random_state=0 to ensure reproducibility of PCA results
+        pca = PCA(n_components=npcs, random_state=0)
         pca.fit(all_spect_windows)
 
 
@@ -1154,6 +1169,10 @@ sparsenesses = [0], store_error = False):
 
     CxxAll = np.sum(Cxx, axis=0)
     CxyAll = np.sum(Cxy, axis=0)
+    # np.linalg.eigh does not complain about NaN or Inf (it silently returns NaN), unlike np.linalg.svd, so check here
+    if not (np.all(np.isfinite(CxxAll)) and np.all(np.isfinite(CxyAll))):
+        raise ValueError('fit_seg(): %d non-finite values (NaN or Inf) in Cxx and %d in Cxy for kernel %s and feature %s'
+                         % (np.sum(~np.isfinite(CxxAll)), np.sum(~np.isfinite(CxyAll)), kernel, x_feature))
     CxxNorm = np.zeros(nSets)
     
     for iS in range(nSets):
@@ -1319,12 +1338,9 @@ sparsenesses = [0], store_error = False):
         CxxAll_inv = nearDiagInv2(np.squeeze(CxxAll), diagCxx, tol=ranktol[itMax])
         hJNAll = CxxAll_inv @ CxyAll
     else:
-        uAll,sAll,vAll = np.linalg.svd(CxxAll)
-        is_mat = np.zeros((nb, nb))
-        for ii in range(nb):
-            is_mat[ii,ii] = 1.0/(sAll[ii] + ranktol[itMax])
-        # hJNAll = vAll.T @ is_mat @ (uAll.T @ CxyAll)
-        hJNAll = uAll @ is_mat @ (vAll @ CxyAll)
+        # Same ridge solution as with the svd, using the eigen decomposition of the symmetric CxxAll (as for the leave-one-out fits above)
+        lambdas, UAll = np.linalg.eigh(CxxAll)
+        hJNAll = UAll @ (np.sign(lambdas)*(UAll.T @ CxyAll)/(np.abs(lambdas) + ranktol[itMax]))
 
     # And apply the sparseness at the best value using the average JN std (as for the STRF in trnDirectFit)
     hJNAll = trnDirectFit.df_fast_filter_filter(hJNAll, hJN_stdMean[itMax,:], sparsenesses[iqMax])
