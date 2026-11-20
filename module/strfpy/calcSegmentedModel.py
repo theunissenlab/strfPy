@@ -1848,6 +1848,9 @@ def process_unit_strf(nwb_file, unit_name, model_dir=None, trials_type='playback
 
     # Calculate spectrogram, smooth psth and make a new object the stimulus-response Data: srData
     srData = preprocSound.preprocess_sound_nwb(nwb_file, trials_type, unit_name, preprocess_type='ft')
+    if srData is None:   # No valid trials for this unit - skip it
+        print('Skipping unit %s: no valid trials in %s' % (unit_name, trials_type))
+        return None
     preprocess_srData(srData, plot=False, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = False)
 
     # Estimate the single trial SNR for this data set
@@ -1946,6 +1949,9 @@ def process_unit(nwb_file, unit_name, model_dir=None, trials_type='playback_tria
 
     # Calculate spectrogram, smooth psth and make a new object the stimulus-response Data: srData
     srData = preprocSound.preprocess_sound_nwb(nwb_file, trials_type, unit_name, preprocess_type='ft')
+    if srData is None:   # No valid trials for this unit - skip it
+        print('Skipping unit %s: no valid trials in %s' % (unit_name, trials_type))
+        return None
     preprocess_srData(srData, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = -1, derivativeThresh=0.3)
 
     # Estimate the single trial SNR for this data set
@@ -2096,6 +2102,9 @@ def process_unit_nostrf(nwb_file, unit_name, model_dir=None, trials_type='playba
 
     # Calculate spectrogram, smooth psth and make a new object the stimulus-response Data: srData
     srData = preprocSound.preprocess_sound_nwb(nwb_file, trials_type, unit_name, preprocess_type='ft')
+    if srData is None:   # No valid trials for this unit - skip it
+        print('Skipping unit %s: no valid trials in %s' % (unit_name, trials_type))
+        return None
     preprocess_srData(srData, plot=False, respChunkLen=respChunkLen, segmentBuffer=segmentBuffer, tdelta=0, plotFlg = False, derivativeThresh=0.3)
 
     # Estimate the single trial SNR for this data set

@@ -53,10 +53,14 @@ def run_one_unit(args):
         with contextlib.redirect_stdout(io.StringIO()):
             result = process_unit(nwb_file, unit, segmentBuffer=segmentBuffer, nPCs=nPCs)
 
+    # result is None when the unit has no valid trials: the None is saved anyway so that a resumed run does not try this unit again
     with open(os.path.join(unit_dir, 'unit_%d.pkl' % unit), 'wb') as f:
         pickle.dump(result, f)
-    print('unit %d done in %.0f min: r2segIDModelLG %.3f r2STRF %.3f'
-          % (unit, (time.time() - t0)/60, result['r2segIDModelLG'], result['r2STRF']), flush=True)
+    if result is None:
+        print('unit %d skipped: no valid trials' % unit, flush=True)
+    else:
+        print('unit %d done in %.0f min: r2segIDModelLG %.3f r2STRF %.3f'
+              % (unit, (time.time() - t0)/60, result['r2segIDModelLG'], result['r2STRF']), flush=True)
 
 
 def main():
@@ -89,11 +93,18 @@ def main():
             pool.map(run_one_unit, [(args.nwb_file, u, args.segmentBuffer, args.nPCs, unit_dir, args.verbose) for u in todo], chunksize=1)
 
     results = []
+    skipped = []
     for u in good_units:
         with open(os.path.join(unit_dir, 'unit_%d.pkl' % u), 'rb') as f:
-            results.append(pickle.load(f))
+            result = pickle.load(f)
+        if result is None:
+            skipped.append(u)
+        else:
+            results.append(result)
     pd.DataFrame(results).to_pickle(args.out)
     print('Saved %d units to %s' % (len(results), args.out), flush=True)
+    if len(skipped) > 0:
+        print('Skipped %d units with no valid trials: %s' % (len(skipped), skipped), flush=True)
 
 
 if __name__ == '__main__':

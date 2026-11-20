@@ -661,9 +661,9 @@ def preprocess_sound_nwb(nwb_file, intervals_name, unit_id, preprocess_type='ft'
     valid_trials = all_trials.apply(lambda x: any((unit_valid_intervals.start_time < x.start_time) & (unit_valid_intervals.stop_time > x.stop_time)), axis=1)
     all_trials = all_trials[valid_trials]
     if len(all_trials) == 0:
-        print(f"No valid trials found for unit {unit_id} in intervals {intervals_name}.")
-        raise ValueError(f"No valid trials found for unit {unit_id} in intervals {intervals_name}.")
-        return -1
+        # Not an error: the unit was not valid during any of these trials.  Return None and let the caller skip this unit.
+        print(f"preprocess_sound_nwb() warning: no valid trials found for unit {unit_id} in intervals {intervals_name}. Returning None.")
+        return None
     # lets balance the trials by stimuli name
 
     # # if 'response' in all_trials.columns:
