@@ -1192,20 +1192,25 @@ def estimate_SNR(srData, smWindow=31, smWindowCoh=7):
         # Our total weights is a measure of total data points used
         totWeight += nT*ntrials
 
-    snrEst = totS2/totN2
-    snrEstf = totS2f/totN2f
+    if (totWeight > 0):
+        snrEst = totS2/totN2
+        snrEstf = totS2f/totN2f
 
-    # Recaculate the coherence to get rid of noise
-    cohTot = snrEstf/(1+snrEstf)
-    meanC = np.mean(cohTot[np.argwhere(f>=fs/4.0)])
-    stdC = np.std(cohTot[np.argwhere(f>=fs/4.0)])
-    cohTot -= meanC
-    cohTot[cohTot<2.0*stdC] = 0
-    snrEstf = cohTot/(1-cohTot)
+        # Recaculate the coherence to get rid of noise
+        cohTot = snrEstf/(1+snrEstf)
+        meanC = np.mean(cohTot[np.argwhere(f>=fs/4.0)])
+        stdC = np.std(cohTot[np.argwhere(f>=fs/4.0)])
+        cohTot -= meanC
+        cohTot[cohTot<2.0*stdC] = 0
+        snrEstf = cohTot/(1-cohTot)
 
-
-    Info = np.log2(1+snrEstf)*(f[1]-f[0])
-    cumInfo = np.cumsum(Info)
+        Info = np.log2(1+snrEstf)*(f[1]-f[0])
+        cumInfo = np.cumsum(Info)
+    else:
+        snrEst = 0
+        snrEstf = np.zeros(fftlen//2+1)
+        cumInfo = np.zeros(fftlen//2+1)
+        f = np.linspace(0, fs/2, fftlen//2+1)
 
     return snrEst, f, snrEstf, cumInfo, totWeight 
 
