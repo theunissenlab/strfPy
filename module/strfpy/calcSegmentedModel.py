@@ -270,7 +270,7 @@ def fit_kernel_DG(learned_conv_kernel, nPoints, nD=2):
                 method="trf",
             )
             basis_args[iEventType, :] = popt
-        except RuntimeError:
+        except (RuntimeError, ValueError):   # ValueError: the bounds are equal when the kernel is flat (e.g. the null model of a failed fit_seg)
             basis_args[iEventType, :] = p0
         
 
@@ -1169,10 +1169,29 @@ sparsenesses = [0], store_error = False):
 
     CxxAll = np.sum(Cxx, axis=0)
     CxyAll = np.sum(Cxy, axis=0)
-    # np.linalg.eigh does not complain about NaN or Inf (it silently returns NaN), unlike np.linalg.svd, so check here
+    # np.linalg.eigh does not complain about NaN or Inf (it silently returns NaN), unlike np.linalg.svd, so check here.
+    # If there are non-finite values, print an error and return a "null" model: zero weights and b0, R2CV, bestTol and bestSparseness = -1.
     if not (np.all(np.isfinite(CxxAll)) and np.all(np.isfinite(CxyAll))):
-        raise ValueError('fit_seg(): %d non-finite values (NaN or Inf) in Cxx and %d in Cxy for kernel %s and feature %s'
-                         % (np.sum(~np.isfinite(CxxAll)), np.sum(~np.isfinite(CxyAll)), kernel, x_feature))
+        print('fit_seg() error: %d non-finite values (NaN or Inf) in Cxx and %d in Cxy for kernel %s and feature %s. Returning a null model.'
+              % (np.sum(~np.isfinite(CxxAll)), np.sum(~np.isfinite(CxyAll)), kernel, x_feature))
+        nSp = len(sparsenesses)
+        segModel = {}
+        segModel['Tol'] = tol
+        segModel['sparsenesses'] = np.array(sparsenesses)
+        segModel['R2CV'] = -np.ones((len(tol), nSp)) if nSp > 1 else -np.ones(len(tol))   # Same shape as for a successful fit
+        segModel['bestTol'] = -1
+        segModel['bestSparseness'] = -1
+        # With zero weights the leave-one-out prediction is the leave-one-out mean: store the corresponding error if asked
+        if (store_error):
+            for iS, iSet in enumerate(pair_train_set):
+                srData["datasets"][iSet]['resp']['error_%s' % kernel] = all_y[iS] - yavg[iS]
+        segModel['weights'] = np.zeros(nD*nFeatures)
+        segModel['b0'] = 0.0
+        segModel['yavg'] = ysumAll/countAll
+        segModel['xavg'] = xsumAll/countAll
+        segModel['Cxy'] = CxyAll/countAll
+        segModel['Cxx'] = CxxAll/countAll
+        return segModel
     CxxNorm = np.zeros(nSets)
     
     for iS in range(nSets):
